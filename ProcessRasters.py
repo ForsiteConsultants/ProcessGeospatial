@@ -6,23 +6,43 @@ Created on Mon Jan 18 13:25:52 2024
 """
 import os
 import fiona
+import pyproj as pp
 from osgeo import gdal
+from geopandas import GeoDataFrame
 import rasterio as rio
 import rasterio.mask
-#from rasterio.io import MemoryFile
-#from rasterio import CRS
+# from rasterio import CRS
 from rasterio import shutil
+from rasterio.features import shapes
 from rasterio.warp import calculate_default_transform, reproject, Resampling
-from shapely.geometry import box
+# from rasterio.io import MemoryFile
+from rasterio.transform import Affine
+from shapely.geometry import box, shape
+from shapely.affinity import translate
 import numpy as np
+from joblib import Parallel, delayed
 
 
-def getRaster(inPath):
+def process_block(block, transform, window):
     """
-    :param inPath: path to raster dataset
+    Process a block of the raster array and return shapes
+    """
+    data = block
+    # Calculate the translation values for the window
+    dx, dy = transform * (window[1][0], window[0][0])
+    # Adjust the translation values to account for the original transform's translation
+    dx -= transform.c
+    dy -= transform.f
+    # Convert the block data into shapes and adjust the coordinates
+    return [(translate(shape(s), xoff=dx, yoff=dy), v) for s, v in shapes(data, transform=transform)]
+
+
+def getRaster(in_path):
+    """
+    :param in_path: path to raster dataset
     :return: rasterio dataset object in 'r+' mode
     """
-    return rio.open(inPath, 'r+')
+    return rio.open(in_path, 'r+')
 
 
 def copyRaster(src, out_file):
@@ -43,11 +63,8 @@ def clipRaster_wRas(src, mask_src, out_file):
     :param out_file: location and name to save output raster
     :return: rasterio dataset object in 'r+' mode
     """
-    #src_path = src.name
-
     geometry = [box(*mask_src.bounds)]
 
-    #with rasterio.open(src_path) as new_src:
     out_array, out_transform = rio.mask.mask(src, geometry, all_touched=True, crop=True)
     out_profile = src.profile
 
@@ -69,11 +86,11 @@ def clipRaster_wRas(src, mask_src, out_file):
     return rio.open(out_file, 'r+')
 
 
-def clipRaster_wPoly(src, shape_path, out_file):
+def clipRaster_wShape(src, shape_path, out_file):
     """
-    Function to clip a raster with a polygon shapefile
+    Function to clip a raster with a shapefile
     :param src: input rasterio dataset object
-    :param shape_path: file path to clip feature dataset
+    :param shape_path: file path to clip shapefile
     :param out_file: location and name to save output raster
     :return: rasterio dataset object in 'r+' mode
     """
@@ -97,6 +114,61 @@ def clipRaster_wPoly(src, shape_path, out_file):
     dst.close()
 
     return rio.open(out_file, 'r+')
+
+
+def rasterToPoly(src, out_file, value_field='Value', multiprocess=False, num_cores=2, block_size=256):
+    """
+    Function to convert a raster to a polygon shapefile
+    :param src: input rasterio dataset object
+    :param out_file: location and name to save output polygon shapefile
+    :param value_field: name of the shapefile field that will contain the raster values (Default = "Value")
+    :param multiprocess: use multiprocessing for raster to polygon conversion (True, False)
+    :param num_cores: number of cores for multiprocessing
+    :param block_size: size of blocks (# raster cells) for multiprocessing
+    :return: None
+    """
+    if not multiprocess:
+        # Create shape generator
+        print('[rasterToPoly - Creating shape generator]')
+        shape_gen = ((shape(s), v) for s, v in shapes(src.read(masked=True), transform=src.transform))
+
+        # Build a GeoDataFrame from unpacked shapes
+        print('[rasterToPoly - Building GeoDataFrame]')
+        gdf = GeoDataFrame(dict(zip(['geometry', f'{value_field}'], zip(*shape_gen))), crs=src.crs)
+    else:
+        # ### Code for multiprocessing
+        # Get raster dimensions
+        height, width = src.height, src.width
+
+        # Function to generate blocks
+        print('[rasterToPoly - Generating data blocks from raster]')
+        def gen_blocks():
+            for i in range(0, height, block_size):
+                for j in range(0, width, block_size):
+                    window = ((i, min(i + block_size, height)), (j, min(j + block_size, width)))
+                    yield src.read(masked=True, window=window), src.transform, window
+
+        # Set up parallel processing
+        print('[rasterToPoly - Setting up and running parallel processing]')
+        shapes_list = Parallel(n_jobs=num_cores)(
+            delayed(process_block)(*block) for block in gen_blocks()
+        )
+
+        # Flatten the list of shapes
+        print('[rasterToPoly - Flattening shapes]')
+        shapes_flat = [shp for shapes_sublist in shapes_list for shp in shapes_sublist]
+
+        # Build a GeoDataFrame from unpacked shapes
+        print('[rasterToPoly - Building GeoDataFrame]')
+        gdf = GeoDataFrame({'geometry': [s for s, _ in shapes_flat],
+                            f'{value_field}': [v for _, v in shapes_flat]},
+                           crs=src.crs)
+
+    # Save to shapefile
+    print('[rasterToPoly - Saving shapefile to out_file]')
+    gdf.to_file(out_file)
+
+    return
 
 
 def reprojRaster(src, out_file, out_crs):
@@ -171,7 +243,7 @@ def sumRasters(src, inrasters):
 
 def updateRaster(src, array, nodata_val=None):
     """
-    :param src: input rasterio dataset object
+    :param src: input rasterio dataset object (TIFF only)
     :param array:
     :param nodata_val:
     :return: rasterio dataset object
@@ -437,3 +509,63 @@ def getHillshade(src, out_file):
                        'hillshade')
 
     return rio.open(out_file, 'r+')
+
+
+def getGridCoordinates(src, out_path_x, out_path_y, out_crs=None):
+    """
+    Function returns two X and Y rasters with cell values matching the grid cell coordinates (one for Xs, one for Ys)
+    :param src: a rasterio dataset object
+    :param out_path_x:
+    :param out_path_y:
+    :param out_crs: string defining new projection (e.g., 'EPSG:4326')
+    :return: a tuple (X, Y) of rasterio dataset objects in 'r+' mode
+    """
+    # Get the affine transformation matrix
+    transform = src.transform
+
+    # Get the coordinate reference system (CRS) of the input raster
+    src_crs = src.crs
+
+    # Get the number of rows and columns in the raster
+    rows, cols = src.height, src.width
+
+    # Get the geolocation of the top-left corner and pixel size
+    x_start, y_start = transform * (0, 0)
+    x_end, y_end = transform * (cols, rows)
+    pixel_size_x = (x_end - x_start) / cols
+    pixel_size_y = (y_end - y_start) / rows
+
+    # Create a new affine transformation matrix for EPSG:4326
+    transformer = pp.Transformer.from_crs(src_crs, out_crs, always_xy=True)
+    # new_transform = Affine.translation(x_start, y_start) * Affine.scale(pixel_size_x, pixel_size_y)
+
+    # Calculate the x & y coordinates for each cell
+    x_coords = np.linspace(x_start + pixel_size_x / 2, x_end - pixel_size_x / 2, cols)
+    y_coords = np.linspace(y_start + pixel_size_y / 2, y_end - pixel_size_y / 2, rows)
+    lon, lat = np.meshgrid(x_coords, y_coords)
+    lon, lat = transformer.transform(lon.flatten(), lat.flatten())
+
+    # Reshape the lon and lat arrays to match the shape of the raster
+    lon = lon.reshape(rows, cols)
+    lat = lat.reshape(rows, cols)
+
+    # Create output profiles for x and y coordinate rasters
+    profile = src.profile.copy()
+    # profile.update({
+    #     'dtype': rio.float64,
+    #     'count': 1
+    # })
+
+    # Write X coordinate data to out_path_x
+    with rio.open(out_path_x, 'w', **profile) as dst:
+        # Write data to out_path_x
+        dst.write(lon, 1)
+    dst.close()
+
+    # Write Y coordinate data to out_path_y
+    with rio.open(out_path_y, 'w', **profile) as dst:
+        # Write data to out_path_y
+        dst.write(lat, 1)
+    dst.close()
+
+    return rio.open(out_path_x, 'r+'), rio.open(out_path_y, 'r+')
