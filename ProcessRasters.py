@@ -5,6 +5,7 @@ Created on Mon Jan 18 13:25:52 2024
 @author: Gregory A. Greene
 """
 import os
+import numpy as np
 import fiona
 import pyproj as pp
 from osgeo import gdal
@@ -16,10 +17,9 @@ from rasterio import shutil
 from rasterio.features import shapes
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 # from rasterio.io import MemoryFile
-from rasterio.transform import Affine
+# from rasterio.transform import Affine
 from shapely.geometry import box, shape
 from shapely.affinity import translate
-import numpy as np
 from joblib import Parallel, delayed
 
 
@@ -511,12 +511,12 @@ def getHillshade(src, out_file):
     return rio.open(out_file, 'r+')
 
 
-def getGridCoordinates(src, out_path_x, out_path_y, out_crs=None):
+def getGridCoordinates(src, out_file_x, out_file_y, out_crs=None):
     """
     Function returns two X and Y rasters with cell values matching the grid cell coordinates (one for Xs, one for Ys)
     :param src: a rasterio dataset object
-    :param out_path_x:
-    :param out_path_y:
+    :param out_file_x: path to output raster for X coordinates
+    :param out_file_y: path to output raster for Y coordinates
     :param out_crs: string defining new projection (e.g., 'EPSG:4326')
     :return: a tuple (X, Y) of rasterio dataset objects in 'r+' mode
     """
@@ -551,21 +551,17 @@ def getGridCoordinates(src, out_path_x, out_path_y, out_crs=None):
 
     # Create output profiles for x and y coordinate rasters
     profile = src.profile.copy()
-    # profile.update({
-    #     'dtype': rio.float64,
-    #     'count': 1
-    # })
 
     # Write X coordinate data to out_path_x
-    with rio.open(out_path_x, 'w', **profile) as dst:
+    with rio.open(out_file_x, 'w', **profile) as dst:
         # Write data to out_path_x
         dst.write(lon, 1)
     dst.close()
 
     # Write Y coordinate data to out_path_y
-    with rio.open(out_path_y, 'w', **profile) as dst:
+    with rio.open(out_file_y, 'w', **profile) as dst:
         # Write data to out_path_y
         dst.write(lat, 1)
     dst.close()
 
-    return rio.open(out_path_x, 'r+'), rio.open(out_path_y, 'r+')
+    return rio.open(out_file_x, 'r+'), rio.open(out_file_y, 'r+')
