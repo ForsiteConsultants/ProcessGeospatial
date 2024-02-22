@@ -15,7 +15,9 @@ import rasterio.mask
 # from rasterio import CRS
 from rasterio import shutil
 from rasterio.features import shapes
+from rasterio.merge import merge
 from rasterio.warp import calculate_default_transform, reproject, Resampling
+from rasterio.windows import Window
 # from rasterio.io import MemoryFile
 # from rasterio.transform import Affine
 from shapely.geometry import box, shape
@@ -105,9 +107,13 @@ def clipRaster_wShape(src, shape_path, out_file):
         out_image, out_transform = rasterio.mask.mask(new_src, shapes, all_touched=True, crop=True)
         out_meta = new_src.meta
 
-    out_meta.update({'height': out_image.shape[1],
-                     'width': out_image.shape[2],
-                     'transform': out_transform})
+    out_meta.update(
+        {
+            'height': out_image.shape[1],
+            'width': out_image.shape[2],
+            'transform': out_transform
+         }
+    )
 
     with rasterio.open(out_file, 'w', **out_meta) as dst:
         dst.write(out_image)
@@ -240,12 +246,45 @@ def sumRasters(src, inrasters):
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(src_path, 'r+')
 
+def mosaicRasters(path_list, out_file):
+    """
+    Function mosaics a list of rasterio objects to a new raster
+    :param path_list: list of paths to rasterio datasets
+    :param out_file: location and name to save output raster
+    :return: rasterio dataset object
+    """
+    mosaic_list = []
+
+    for path in path_list:
+        mosaic_list.extend([rio.open(path)])
+
+    mosaic, output = merge(mosaic_list)
+
+    out_meta = mosaic_list[0].meta
+    out_meta.update(
+        {
+            'driver': 'GTiff',
+            'height': mosaic.shape[1],
+            'width': mosaic.shape[2],
+            'transform': output
+         }
+    )
+
+    with rio.open(out_file, 'w', **out_meta) as dst:
+        dst.write(mosaic)
+    dst.close()
+
+    return rio.open(out_file, 'r+')
+
+
+
 
 def updateRaster(src, array, nodata_val=None):
     """
+    Function to update values in a raster with an input array
     :param src: input rasterio dataset object (TIFF only)
-    :param array:
-    :param nodata_val:
+    :param array: numpy array object
+    :param nodata_val: value to assign as "No Data"
     :return: rasterio dataset object
     """
     # Get profile of source dataset
@@ -274,6 +313,53 @@ def updateRaster(src, array, nodata_val=None):
 
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(src_path, 'r+')
+
+
+# STILL WORKING ON THIS FUNCTION
+# def updateLargeRas_wSmallRas(src_lrg, src_small, nodata_val=None):
+#     """
+#     Function to update values in a large raster with values from a smaller raster.
+#     The smaller raster must fit within the extent of the large raster.
+#     :param src_lrg: input rasterio dataset object of larger raster
+#     :param src_small: input rasterio dataset object of smaller raster
+#     :param nodata_val: the value corresponding to no data; used to exclude those values from the update
+#     :return: None
+#     """
+#     # Get the transform and profile of the large raster
+#     src_lrg_transform = src_lrg.transform
+#
+#     # Iterate over windows of the large raster
+#     for _, window in src_lrg.block_windows(0):
+#         # Read the corresponding window from the large raster
+#         large_data = src_lrg.read(window=window)
+#
+#         # Get the window's coordinates in the large raster
+#         window_coords = src_lrg.window_transform(window)
+#
+#         # Calculate the corresponding window in the small raster
+#         small_window = Window(col_off=int(window_coords[0]), row_off=int(window_coords[1]),
+#                               width=window.width, height=window.height)
+#
+#         # Read the data from the small raster for the current window
+#         small_data = src_small.read(window=small_window)
+#
+#         # Calculate the offset for the overlap in the small raster
+#         overlap_offset_small = (small_window.col_off - window_coords[0], small_window.row_off - window_coords[1])
+#
+#         # Mask for valid values in the small raster
+#         valid_mask = ~np.isnan(small_data) & (small_data != nodata_val)
+#
+#         # Update the large raster with values from the small raster where valid
+#         large_data[:, int(overlap_offset_small[1]):int(overlap_offset_small[1] + small_data.shape[1]),
+#         int(overlap_offset_small[0]):int(overlap_offset_small[0] + small_data.shape[2])] = \
+#             np.where(valid_mask, small_data,
+#                      large_data[:, int(overlap_offset_small[1]):int(overlap_offset_small[1] + small_data.shape[1]),
+#                      int(overlap_offset_small[0]):int(overlap_offset_small[0] + small_data.shape[2])])
+#
+#         # Write the updated data back to the large raster
+#         src_lrg.write(large_data, window=window)
+#
+#     return src_lrg
 
 
 def arrayToRaster(array, out_file, rasprofile, nodata_val=None, data_type=None):
