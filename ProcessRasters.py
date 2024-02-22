@@ -39,22 +39,82 @@ def process_block(block, transform, window):
     return [(translate(shape(s), xoff=dx, yoff=dy), v) for s, v in shapes(data, transform=transform)]
 
 
-def getRaster(in_path):
+def arrayToRaster(array, out_file, rasprofile, nodata_val=None, data_type=None):
     """
-    :param in_path: path to raster dataset
-    :return: rasterio dataset object in 'r+' mode
+    :param array: input numpy array
+    :param out_file:
+    :param rasprofile:
+    :param nodata_val:
+    :param data_type:
+    :return: rasterio dataset object
     """
-    return rio.open(in_path, 'r+')
+    # Get profile
+    profile = rasprofile
+
+    # Update profile
+    profile.update(
+        compress='lzw'  # Specify LZW compression
+    )
+    if nodata_val:
+        profile.update(
+            nodata=nodata_val   # Specify nodata value
+        )
+    if data_type:
+        profile.update(
+            dtype=data_type   # Specify nodata value
+        )
+
+    # Create new raster file
+    with rio.open(out_file, 'w', **profile) as dst:
+        # Write data to new raster
+        dst.write(array)
+    # Close new raster
+    dst.close()
+
+    # Return new raster as "readonly" rasterio openfile object
+    return rio.open(out_file, 'r+')
 
 
-def copyRaster(src, out_file):
+def changeDtype(src, datatype, nodata_val=None):
     """
     :param src: input rasterio dataset object
-    :param out_file:
+    :param nodata_val:
     :return: rasterio dataset object in 'r+' mode
     """
-    shutil.copyfiles(src.name, out_file)
-    return rio.open(out_file, 'r+')
+    if nodata_val is None:
+        nodata_val = src.profile['nodata']
+
+    # Convert array values to integer type
+    src_array = src.read()
+    src_array[src_array == src.nodata] = nodata_val
+    if 'int' in datatype:
+        src_array = np.asarray(src_array, dtype=int)
+    else:
+        src_array = np.asarray(src_array, dtype=float)
+
+
+    # Get file path of dataset object
+    src_path = src.name
+
+    # Get profile of dataset object
+    profile = src.profile
+
+    # Specify LZW compression and assign integer datatype
+    profile.update(
+        compress='lzw',
+        nodata=nodata_val,
+        dtype=datatype)
+
+    src.close()
+
+    # Create new raster file
+    with rio.open(src_path, 'w', **profile) as dst:
+        # Write data to new raster
+        dst.write(src_array)
+    # Close new raster
+    dst.close()
+
+    return rio.open(src_path, 'r+')
 
 
 def clipRaster_wRas(src, mask_src, out_file):
@@ -117,6 +177,224 @@ def clipRaster_wShape(src, shape_path, out_file):
 
     with rasterio.open(out_file, 'w', **out_meta) as dst:
         dst.write(out_image)
+    dst.close()
+
+    return rio.open(out_file, 'r+')
+
+
+def copyRaster(src, out_file):
+    """
+    :param src: input rasterio dataset object
+    :param out_file:
+    :return: rasterio dataset object in 'r+' mode
+    """
+    shutil.copyfiles(src.name, out_file)
+    return rio.open(out_file, 'r+')
+
+
+def exportRaster(src, out_file):
+    """
+    :param src: input rasterio dataset object
+    :param out_file:
+    :return: rasterio dataset object
+    """
+    # Get profile
+    src_profile = src.profile
+
+    # Specify LZW compression
+    src_profile.update(
+        compress='lzw'
+    )
+
+    # Get raster array
+    src_array = src.read()
+
+    # Create new raster file
+    with rio.open(out_file, 'w', **src_profile) as dst:
+        # Write data to new raster
+        dst.write(src_array)
+    # Close new raster
+    dst.close()
+
+    return
+
+
+def getAspect(src, out_file):
+    """
+    :param src: a rasterio dataset object
+    :param out_file: the path and name of the output file
+    :return: rasterio dataset object
+    """
+    # Get file path of dataset object
+    src_path = src.name
+
+    gdal.DEMProcessing(out_file,
+                       src_path,
+                       'aspect')
+
+    return rio.open(out_file, 'r+')
+
+
+def getHillshade(src, out_file):
+    """
+    :param src: a rasterio dataset object
+    :param out_file: the path and name of the output file
+    :return: rasterio dataset object
+    """
+    # Get file path of dataset object
+    src_path = src.name
+
+    gdal.DEMProcessing(out_file,
+                       src_path,
+                       'hillshade')
+
+    return rio.open(out_file, 'r+')
+
+
+def getSlope(src, out_file, slopeformat):
+    """
+    :param src: input rasterio dataset object
+    :param out_file: the path and name of the output file
+    :param slopeformat: slope format ("degree" or "percent")
+    :return: rasterio dataset object
+    """
+    # Get file path of dataset object
+    src_path = src.name
+
+    gdal.DEMProcessing(out_file,
+                       src_path,
+                       'slope',
+                       slopeFormat=slopeformat)
+
+    return rio.open(out_file, 'r+')
+
+
+def getGridCoordinates(src, out_file_x, out_file_y, out_crs=None):
+    """
+    Function returns two X and Y rasters with cell values matching the grid cell coordinates (one for Xs, one for Ys)
+    :param src: a rasterio dataset object
+    :param out_file_x: path to output raster for X coordinates
+    :param out_file_y: path to output raster for Y coordinates
+    :param out_crs: string defining new projection (e.g., 'EPSG:4326')
+    :return: a tuple (X, Y) of rasterio dataset objects in 'r+' mode
+    """
+    # Get the affine transformation matrix
+    transform = src.transform
+
+    # Get the coordinate reference system (CRS) of the input raster
+    src_crs = src.crs
+
+    # Get the number of rows and columns in the raster
+    rows, cols = src.height, src.width
+
+    # Get the geolocation of the top-left corner and pixel size
+    x_start, y_start = transform * (0, 0)
+    x_end, y_end = transform * (cols, rows)
+    pixel_size_x = (x_end - x_start) / cols
+    pixel_size_y = (y_end - y_start) / rows
+
+    # Create a new affine transformation matrix for EPSG:4326
+    transformer = pp.Transformer.from_crs(src_crs, out_crs, always_xy=True)
+    # new_transform = Affine.translation(x_start, y_start) * Affine.scale(pixel_size_x, pixel_size_y)
+
+    # Calculate the x & y coordinates for each cell
+    x_coords = np.linspace(x_start + pixel_size_x / 2, x_end - pixel_size_x / 2, cols)
+    y_coords = np.linspace(y_start + pixel_size_y / 2, y_end - pixel_size_y / 2, rows)
+    lon, lat = np.meshgrid(x_coords, y_coords)
+    lon, lat = transformer.transform(lon.flatten(), lat.flatten())
+
+    # Reshape the lon and lat arrays to match the shape of the raster
+    lon = lon.reshape(rows, cols)
+    lat = lat.reshape(rows, cols)
+
+    # Create output profiles for x and y coordinate rasters
+    profile = src.profile.copy()
+
+    # Write X coordinate data to out_path_x
+    with rio.open(out_file_x, 'w', **profile) as dst:
+        # Write data to out_path_x
+        dst.write(lon, 1)
+    dst.close()
+
+    # Write Y coordinate data to out_path_y
+    with rio.open(out_file_y, 'w', **profile) as dst:
+        # Write data to out_path_y
+        dst.write(lat, 1)
+    dst.close()
+
+    return rio.open(out_file_x, 'r+'), rio.open(out_file_y, 'r+')
+
+
+def getRaster(in_path):
+    """
+    :param in_path: path to raster dataset
+    :return: rasterio dataset object in 'r+' mode
+    """
+    return rio.open(in_path, 'r+')
+
+
+def Integer(src, datatype, nodata_val):
+    """
+    :param src:
+    :param datatype:
+    :param nodata_val:
+    :return:
+    """
+    # Convert array values to integer type
+    int_array = src.read()
+    int_array[int_array == src.nodata] = nodata_val
+    int_array = np.asarray(int_array, dtype=int)
+
+    # Get file path of dataset object
+    src_path = src.name
+
+    # Get profile of dataset object
+    profile = src.profile
+
+    # Specify LZW compression and assign integer datatype
+    profile.update(
+        compress='lzw',
+        nodata=nodata_val,
+        dtype=datatype)
+
+    src.close()
+
+    # Create new raster file
+    with rio.open(src_path, 'w', **profile) as dst:
+        # Write data to new raster
+        dst.write(int_array)
+    # Close new raster
+    dst.close()
+
+    return rio.open(src_path, 'r+')
+
+
+def mosaicRasters(path_list, out_file):
+    """
+    Function mosaics a list of rasterio objects to a new raster
+    :param path_list: list of paths to rasterio datasets
+    :param out_file: location and name to save output raster
+    :return: rasterio dataset object
+    """
+    mosaic_list = []
+
+    for path in path_list:
+        mosaic_list.extend([rio.open(path)])
+
+    mosaic, output = merge(mosaic_list)
+
+    out_meta = mosaic_list[0].meta
+    out_meta.update(
+        {
+            'driver': 'GTiff',
+            'height': mosaic.shape[1],
+            'width': mosaic.shape[2],
+            'transform': output
+         }
+    )
+
+    with rio.open(out_file, 'w', **out_meta) as dst:
+        dst.write(mosaic)
     dst.close()
 
     return rio.open(out_file, 'r+')
@@ -246,37 +524,49 @@ def sumRasters(src, inrasters):
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(src_path, 'r+')
 
-def mosaicRasters(path_list, out_file):
+
+def tifToASCII(src, out_file):
     """
-    Function mosaics a list of rasterio objects to a new raster
-    :param path_list: list of paths to rasterio datasets
-    :param out_file: location and name to save output raster
-    :return: rasterio dataset object
+    :param src: input rasterio dataset object
+    :param out_file:
+    :return: new rasterio dataset object in 'r+' mode
     """
-    mosaic_list = []
+    #src_path = in_src.name
+    #in_src.close()
 
-    for path in path_list:
-        mosaic_list.extend([rio.open(path)])
+    #with rasterio.open(src_path) as src:
+    # Read raster data as a 2D NumPy array
+    data = src.read(1)
 
-    mosaic, output = merge(mosaic_list)
+    # Get the transform (georeferencing information)
+    transform = src.transform
 
-    out_meta = mosaic_list[0].meta
-    out_meta.update(
-        {
-            'driver': 'GTiff',
-            'height': mosaic.shape[1],
-            'width': mosaic.shape[2],
-            'transform': output
-         }
-    )
+    # Get the number of rows and columns
+    rows, cols = data.shape
 
-    with rio.open(out_file, 'w', **out_meta) as dst:
-        dst.write(mosaic)
-    dst.close()
+    # Get the origin (top-left corner)
+    x_ll_corner, y_ll_corner = transform * (0, rows)
+
+    # Compute the pixel size
+    pixel_size = transform[0]
+
+    # Write the data to the ASCII file
+    with open(out_file, 'w') as outfile:
+        # Write header information
+        outfile.write(f'ncols\t{cols}\n')
+        outfile.write(f'nrows\t{rows}\n')
+        outfile.write(f'xllcorner\t{x_ll_corner}\n')
+        outfile.write(f'yllcorner\t{y_ll_corner}\n')
+        outfile.write(f'cellsize\t{pixel_size}\n')
+        outfile.write('NODATA_value\t-9999.000000\n')
+
+        # Write the data values
+        for row in data:
+            for value in row:
+                outfile.write(f'{value}\t')
+            outfile.write('\n')
 
     return rio.open(out_file, 'r+')
-
-
 
 
 def updateRaster(src, array, nodata_val=None):
@@ -360,294 +650,3 @@ def updateRaster(src, array, nodata_val=None):
 #         src_lrg.write(large_data, window=window)
 #
 #     return src_lrg
-
-
-def arrayToRaster(array, out_file, rasprofile, nodata_val=None, data_type=None):
-    """
-    :param array: input numpy array
-    :param out_file:
-    :param rasprofile:
-    :param nodata_val:
-    :param data_type:
-    :return: rasterio dataset object
-    """
-    # Get profile
-    profile = rasprofile
-
-    # Update profile
-    profile.update(
-        compress='lzw'  # Specify LZW compression
-    )
-    if nodata_val:
-        profile.update(
-            nodata=nodata_val   # Specify nodata value
-        )
-    if data_type:
-        profile.update(
-            dtype=data_type   # Specify nodata value
-        )
-
-    # Create new raster file
-    with rio.open(out_file, 'w', **profile) as dst:
-        # Write data to new raster
-        dst.write(array)
-    # Close new raster
-    dst.close()
-
-    # Return new raster as "readonly" rasterio openfile object
-    return rio.open(out_file, 'r+')
-
-
-def exportRaster(src, out_file):
-    """
-    :param src: input rasterio dataset object
-    :param out_file:
-    :return: rasterio dataset object
-    """
-    # Get profile
-    src_profile = src.profile
-
-    # Specify LZW compression
-    src_profile.update(
-        compress='lzw'
-    )
-
-    # Get raster array
-    src_array = src.read()
-
-    # Create new raster file
-    with rio.open(out_file, 'w', **src_profile) as dst:
-        # Write data to new raster
-        dst.write(src_array)
-    # Close new raster
-    dst.close()
-
-    return
-
-
-def Integer(src, datatype, nodata_val):
-    """
-    :param src:
-    :param datatype:
-    :param nodata_val:
-    :return:
-    """
-    # Convert array values to integer type
-    int_array = src.read()
-    int_array[int_array == src.nodata] = nodata_val
-    int_array = np.asarray(int_array, dtype=int)
-
-    # Get file path of dataset object
-    src_path = src.name
-
-    # Get profile of dataset object
-    profile = src.profile
-
-    # Specify LZW compression and assign integer datatype
-    profile.update(
-        compress='lzw',
-        nodata=nodata_val,
-        dtype=datatype)
-
-    src.close()
-
-    # Create new raster file
-    with rio.open(src_path, 'w', **profile) as dst:
-        # Write data to new raster
-        dst.write(int_array)
-    # Close new raster
-    dst.close()
-
-    return rio.open(src_path, 'r+')
-
-
-def changeDtype(src, datatype, nodata_val=None):
-    """
-    :param src: input rasterio dataset object
-    :param nodata_val:
-    :return: rasterio dataset object in 'r+' mode
-    """
-    if nodata_val is None:
-        nodata_val = src.profile['nodata']
-
-    # Convert array values to integer type
-    src_array = src.read()
-    src_array[src_array == src.nodata] = nodata_val
-    if 'int' in datatype:
-        src_array = np.asarray(src_array, dtype=int)
-    else:
-        src_array = np.asarray(src_array, dtype=float)
-
-
-    # Get file path of dataset object
-    src_path = src.name
-
-    # Get profile of dataset object
-    profile = src.profile
-
-    # Specify LZW compression and assign integer datatype
-    profile.update(
-        compress='lzw',
-        nodata=nodata_val,
-        dtype=datatype)
-
-    src.close()
-
-    # Create new raster file
-    with rio.open(src_path, 'w', **profile) as dst:
-        # Write data to new raster
-        dst.write(src_array)
-    # Close new raster
-    dst.close()
-
-    return rio.open(src_path, 'r+')
-
-
-def tifToASCII(src, out_file):
-    """
-    :param src: input rasterio dataset object
-    :param out_file:
-    :return: new rasterio dataset object in 'r+' mode
-    """
-    #src_path = in_src.name
-    #in_src.close()
-
-    #with rasterio.open(src_path) as src:
-    # Read raster data as a 2D NumPy array
-    data = src.read(1)
-
-    # Get the transform (georeferencing information)
-    transform = src.transform
-
-    # Get the number of rows and columns
-    rows, cols = data.shape
-
-    # Get the origin (top-left corner)
-    x_ll_corner, y_ll_corner = transform * (0, rows)
-
-    # Compute the pixel size
-    pixel_size = transform[0]
-
-    # Write the data to the ASCII file
-    with open(out_file, 'w') as outfile:
-        # Write header information
-        outfile.write(f'ncols\t{cols}\n')
-        outfile.write(f'nrows\t{rows}\n')
-        outfile.write(f'xllcorner\t{x_ll_corner}\n')
-        outfile.write(f'yllcorner\t{y_ll_corner}\n')
-        outfile.write(f'cellsize\t{pixel_size}\n')
-        outfile.write('NODATA_value\t-9999.000000\n')
-
-        # Write the data values
-        for row in data:
-            for value in row:
-                outfile.write(f'{value}\t')
-            outfile.write('\n')
-
-    return rio.open(out_file, 'r+')
-
-
-def getSlope(src, out_file, slopeformat):
-    """
-    :param src: input rasterio dataset object
-    :param out_file: the path and name of the output file
-    :param slopeformat: slope format ("degree" or "percent")
-    :return: rasterio dataset object
-    """
-    # Get file path of dataset object
-    src_path = src.name
-
-    gdal.DEMProcessing(out_file,
-                       src_path,
-                       'slope',
-                       slopeFormat=slopeformat)
-
-    return rio.open(out_file, 'r+')
-
-
-def getAspect(src, out_file):
-    """
-    :param src: a rasterio dataset object
-    :param out_file: the path and name of the output file
-    :return: rasterio dataset object
-    """
-    # Get file path of dataset object
-    src_path = src.name
-
-    gdal.DEMProcessing(out_file,
-                       src_path,
-                       'aspect')
-
-    return rio.open(out_file, 'r+')
-
-
-def getHillshade(src, out_file):
-    """
-    :param src: a rasterio dataset object
-    :param out_file: the path and name of the output file
-    :return: rasterio dataset object
-    """
-    # Get file path of dataset object
-    src_path = src.name
-
-    gdal.DEMProcessing(out_file,
-                       src_path,
-                       'hillshade')
-
-    return rio.open(out_file, 'r+')
-
-
-def getGridCoordinates(src, out_file_x, out_file_y, out_crs=None):
-    """
-    Function returns two X and Y rasters with cell values matching the grid cell coordinates (one for Xs, one for Ys)
-    :param src: a rasterio dataset object
-    :param out_file_x: path to output raster for X coordinates
-    :param out_file_y: path to output raster for Y coordinates
-    :param out_crs: string defining new projection (e.g., 'EPSG:4326')
-    :return: a tuple (X, Y) of rasterio dataset objects in 'r+' mode
-    """
-    # Get the affine transformation matrix
-    transform = src.transform
-
-    # Get the coordinate reference system (CRS) of the input raster
-    src_crs = src.crs
-
-    # Get the number of rows and columns in the raster
-    rows, cols = src.height, src.width
-
-    # Get the geolocation of the top-left corner and pixel size
-    x_start, y_start = transform * (0, 0)
-    x_end, y_end = transform * (cols, rows)
-    pixel_size_x = (x_end - x_start) / cols
-    pixel_size_y = (y_end - y_start) / rows
-
-    # Create a new affine transformation matrix for EPSG:4326
-    transformer = pp.Transformer.from_crs(src_crs, out_crs, always_xy=True)
-    # new_transform = Affine.translation(x_start, y_start) * Affine.scale(pixel_size_x, pixel_size_y)
-
-    # Calculate the x & y coordinates for each cell
-    x_coords = np.linspace(x_start + pixel_size_x / 2, x_end - pixel_size_x / 2, cols)
-    y_coords = np.linspace(y_start + pixel_size_y / 2, y_end - pixel_size_y / 2, rows)
-    lon, lat = np.meshgrid(x_coords, y_coords)
-    lon, lat = transformer.transform(lon.flatten(), lat.flatten())
-
-    # Reshape the lon and lat arrays to match the shape of the raster
-    lon = lon.reshape(rows, cols)
-    lat = lat.reshape(rows, cols)
-
-    # Create output profiles for x and y coordinate rasters
-    profile = src.profile.copy()
-
-    # Write X coordinate data to out_path_x
-    with rio.open(out_file_x, 'w', **profile) as dst:
-        # Write data to out_path_x
-        dst.write(lon, 1)
-    dst.close()
-
-    # Write Y coordinate data to out_path_y
-    with rio.open(out_file_y, 'w', **profile) as dst:
-        # Write data to out_path_y
-        dst.write(lat, 1)
-    dst.close()
-
-    return rio.open(out_file_x, 'r+'), rio.open(out_file_y, 'r+')
