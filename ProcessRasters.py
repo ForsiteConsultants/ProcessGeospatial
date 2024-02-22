@@ -25,7 +25,7 @@ from shapely.affinity import translate
 from joblib import Parallel, delayed
 
 
-def process_block(block, transform, window):
+def _process_block(block, transform, window):
     """
     Process a block of the raster array and return shapes
     """
@@ -435,7 +435,7 @@ def rasterToPoly(src, out_file, value_field='Value', multiprocess=False, num_cor
         # Set up parallel processing
         print('[rasterToPoly - Setting up and running parallel processing]')
         shapes_list = Parallel(n_jobs=num_cores)(
-            delayed(process_block)(*block) for block in gen_blocks()
+            delayed(_process_block)(*block) for block in gen_blocks()
         )
 
         # Flatten the list of shapes
