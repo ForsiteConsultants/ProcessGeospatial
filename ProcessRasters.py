@@ -177,7 +177,6 @@ def clipRaster_wShape(src, shape_path, out_file):
 
     with rasterio.open(out_file, 'w', **out_meta) as dst:
         dst.write(out_image)
-    dst.close()
 
     return rio.open(out_file, 'r+')
 
@@ -467,8 +466,8 @@ def reprojRaster(src, out_file, out_crs):
     transform, width, height = calculate_default_transform(
         src.crs, out_crs, src.width, src.height, *src.bounds
     )
-    kwargs = src.meta.copy()
-    kwargs.update({
+    meta = src.meta.copy()
+    meta.update({
         'crs': out_crs,
         'transform': transform,
         'width': width,
@@ -476,7 +475,7 @@ def reprojRaster(src, out_file, out_crs):
     })
 
     # Reproject raster and write to out_file
-    with rio.open(out_file, 'w', **kwargs) as dst:
+    with rio.open(out_file, 'w', **meta) as dst:
         for i in range(1, src.count + 1):
             reproject(
                 source=rio.band(src, i),
@@ -486,8 +485,6 @@ def reprojRaster(src, out_file, out_crs):
                 dst_transform=transform,
                 dst_crs=out_crs,
                 resampling=Resampling.nearest)
-    # Close source raster
-    dst.close()
 
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(out_file, 'r+')
