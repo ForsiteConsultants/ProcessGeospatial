@@ -234,40 +234,6 @@ def getAspect(src, out_file):
     return rio.open(out_file, 'r+')
 
 
-def getHillshade(src, out_file):
-    """
-    :param src: a rasterio dataset object
-    :param out_file: the path and name of the output file
-    :return: rasterio dataset object
-    """
-    # Get file path of dataset object
-    src_path = src.name
-
-    gdal.DEMProcessing(out_file,
-                       src_path,
-                       'hillshade')
-
-    return rio.open(out_file, 'r+')
-
-
-def getSlope(src, out_file, slopeformat):
-    """
-    :param src: input rasterio dataset object
-    :param out_file: the path and name of the output file
-    :param slopeformat: slope format ("degree" or "percent")
-    :return: rasterio dataset object
-    """
-    # Get file path of dataset object
-    src_path = src.name
-
-    gdal.DEMProcessing(out_file,
-                       src_path,
-                       'slope',
-                       slopeFormat=slopeformat)
-
-    return rio.open(out_file, 'r+')
-
-
 def getGridCoordinates(src, out_file_x, out_file_y, out_crs=None):
     """
     Function returns two X and Y rasters with cell values matching the grid cell coordinates (one for Xs, one for Ys)
@@ -324,12 +290,93 @@ def getGridCoordinates(src, out_file_x, out_file_y, out_crs=None):
     return rio.open(out_file_x, 'r+'), rio.open(out_file_y, 'r+')
 
 
+def getHillshade(src, out_file):
+    """
+    :param src: a rasterio dataset object
+    :param out_file: the path and name of the output file
+    :return: rasterio dataset object
+    """
+    # Get file path of dataset object
+    src_path = src.name
+
+    gdal.DEMProcessing(out_file,
+                       src_path,
+                       'hillshade')
+
+    return rio.open(out_file, 'r+')
+
+
 def getRaster(in_path):
     """
     :param in_path: path to raster dataset
     :return: rasterio dataset object in 'r+' mode
     """
     return rio.open(in_path, 'r+')
+
+
+def getMax(in_rasters, out_file):
+    """
+    Function creates a new raster from the maximum values of all input rasters
+    :param in_rasters: list of rasterio dataset objects
+    :param out_file: the path and name of the output file
+    :return: rasterio dataset object in 'r+' mode
+    """
+    if not isinstance(in_rasters, list):
+        raise Exception('[ProcessRasters] getMax() param "inrasters" must be a list of rasterio objects')
+
+    profile = in_rasters[0].profile
+    array_list = [ras.read() for ras in in_rasters]
+
+    max_array = np.maximum.reduce(array_list)
+
+    # Create new raster file
+    with rio.open(out_file, 'w', **profile) as dst:
+        # Write data to new raster
+        dst.write(max_array)
+
+    return rio.open(out_file, 'r+')
+
+
+def getMin(in_rasters, out_file):
+    """
+    Function creates a new raster from the minimum values of all input rasters
+    :param in_rasters: list of rasterio dataset objects
+    :param out_file: the path and name of the output file
+    :return: rasterio dataset object in 'r+' mode
+    """
+    if not isinstance(in_rasters, list):
+        raise Exception('[ProcessRasters] getMax() param "inrasters" must be a list of rasterio objects')
+
+    profile = in_rasters[0].profile
+    array_list = [ras.read() for ras in in_rasters]
+
+    max_array = np.minimum.reduce(array_list)
+
+    # Create new raster file
+    with rio.open(out_file, 'w', **profile) as dst:
+        # Write data to new raster
+        dst.write(max_array)
+
+    return rio.open(out_file, 'r+')
+
+
+
+def getSlope(src, out_file, slopeformat):
+    """
+    :param src: input rasterio dataset object
+    :param out_file: the path and name of the output file
+    :param slopeformat: slope format ("degree" or "percent")
+    :return: rasterio dataset object in 'r+' mode
+    """
+    # Get file path of dataset object
+    src_path = src.name
+
+    gdal.DEMProcessing(out_file,
+                       src_path,
+                       'slope',
+                       slopeFormat=slopeformat)
+
+    return rio.open(out_file, 'r+')
 
 
 def Integer(src, datatype, nodata_val):
@@ -371,7 +418,7 @@ def Integer(src, datatype, nodata_val):
 def mosaicRasters(path_list, out_file):
     """
     Function mosaics a list of rasterio objects to a new raster
-    :param path_list: list of paths to rasterio datasets
+    :param path_list: list of paths to raster datasets
     :param out_file: location and name to save output raster
     :return: rasterio dataset object
     """
@@ -399,15 +446,15 @@ def mosaicRasters(path_list, out_file):
     return rio.open(out_file, 'r+')
 
 
-def rasterToPoly(src, out_file, value_field='Value', multiprocess=False, num_cores=2, block_size=256):
+def rasterToPoly(src, out_file, shp_value_field='Value', multiprocess=False, num_cores=2, block_size=256):
     """
     Function to convert a raster to a polygon shapefile
     :param src: input rasterio dataset object
-    :param out_file: location and name to save output polygon shapefile
-    :param value_field: name of the shapefile field that will contain the raster values (Default = "Value")
-    :param multiprocess: use multiprocessing for raster to polygon conversion (True, False)
-    :param num_cores: number of cores for multiprocessing
-    :param block_size: size of blocks (# raster cells) for multiprocessing
+    :param out_file: string; location and name to save output polygon shapefile
+    :param shp_value_field: string; name of the shapefile field that will contain the raster values (Default = "Value")
+    :param multiprocess: bool; use multiprocessing for raster to polygon conversion (True, False)
+    :param num_cores: int; number of cores for multiprocessing
+    :param block_size: int; size of blocks (# raster cells) for multiprocessing
     :return: None
     """
     if not multiprocess:
@@ -417,7 +464,7 @@ def rasterToPoly(src, out_file, value_field='Value', multiprocess=False, num_cor
 
         # Build a GeoDataFrame from unpacked shapes
         print('[rasterToPoly - Building GeoDataFrame]')
-        gdf = GeoDataFrame(dict(zip(['geometry', f'{value_field}'], zip(*shape_gen))), crs=src.crs)
+        gdf = GeoDataFrame(dict(zip(['geometry', f'{shp_value_field}'], zip(*shape_gen))), crs=src.crs)
     else:
         # ### Code for multiprocessing
         # Get raster dimensions
@@ -444,7 +491,7 @@ def rasterToPoly(src, out_file, value_field='Value', multiprocess=False, num_cor
         # Build a GeoDataFrame from unpacked shapes
         print('[rasterToPoly - Building GeoDataFrame]')
         gdf = GeoDataFrame({'geometry': [s for s, _ in shapes_flat],
-                            f'{value_field}': [v for _, v in shapes_flat]},
+                            f'{shp_value_field}': [v for _, v in shapes_flat]},
                            crs=src.crs)
 
     # Save to shapefile
@@ -492,6 +539,7 @@ def reprojRaster(src, out_file, out_crs):
 
 def sumRasters(src, inrasters):
     """
+    Function to sum values with an existing dataset
     :param src: input rasterio dataset object
     :param inrasters: raster or list or rasters to add to src raster
     :return: rasterio dataset object
@@ -566,6 +614,27 @@ def tifToASCII(src, out_file):
     return rio.open(out_file, 'r+')
 
 
+def toMultiband(path_list, out_file):
+    """
+    Function to merge multiple single-band rasters into a new multiband raster
+    :param path_list: list of strings; list of paths to single-band raster datasets
+    :param out_file: string; location and name to save output raster
+    :return: rasterio dataset object in 'r+' mode
+    """
+    array_list = [getRaster(path).read(1, masked=True) for path in path_list]
+
+    out_meta = getRaster(path_list[0]).meta.copy()
+    out_meta.update({'count': len(path_list)})
+
+    shutil.copyfiles(getRaster(path_list[0]).name, out_file)
+
+    with rio.open(out_file, 'w', **out_meta) as dest:
+        for band_nr, src in enumerate(array_list, start=1):
+            dest.write(src, band_nr)
+
+    return rio.open(out_file, 'r+')
+
+
 def updateRaster(src, array, nodata_val=None):
     """
     Function to update values in a raster with an input array
@@ -589,14 +658,12 @@ def updateRaster(src, array, nodata_val=None):
         )
     src_path = src.name     # Get path of input source dataset
     src.close()             # Close input source dataset
-    os.remove(src_path)     # Delete input source dataset
+    #os.remove(src_path)     # Delete input source dataset
 
     # Write new data to source out_path (replace original data)
-    with rio.open(src_path, 'w', **profile) as dst:
+    with rio.open(src_path, 'r+', **profile) as dst:
         # Write data to source raster
         dst.write(array)
-    # Close source raster
-    dst.close()
 
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(src_path, 'r+')
