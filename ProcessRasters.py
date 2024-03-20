@@ -117,17 +117,19 @@ def changeDtype(src, datatype, nodata_val=None):
     return rio.open(src_path, 'r+')
 
 
-def clipRaster_wRas(src, mask_src, out_file):
+def clipRaster_wRas(src, mask_src, out_file, all_touched=True, crop=True):
     """
     Function to clip a raster with the extent of another raster
     :param src: rasterio dataset object being masked
     :param mask_src: rasterio dataset object used as a mask
     :param out_file: location and name to save output raster
+    :param all_touched: bool; include all cells that touch the raster boundary (in addition to inside the boundary)
+    :param crop: bool; crop output extent to match the extent of the data
     :return: rasterio dataset object in 'r+' mode
     """
     geometry = [box(*mask_src.bounds)]
 
-    out_array, out_transform = rio.mask.mask(src, geometry, all_touched=True, crop=True)
+    out_array, out_transform = rio.mask.mask(src, geometry, all_touched=all_touched, crop=crop)
     out_profile = src.profile
 
     src.close()
@@ -148,12 +150,14 @@ def clipRaster_wRas(src, mask_src, out_file):
     return rio.open(out_file, 'r+')
 
 
-def clipRaster_wShape(src, shape_path, out_file):
+def clipRaster_wShape(src, shape_path, out_file, all_touched=True, crop=True):
     """
     Function to clip a raster with a shapefile
     :param src: input rasterio dataset object
     :param shape_path: file path to clip shapefile
     :param out_file: location and name to save output raster
+    :param all_touched: bool; include all cells that touch the shapefile boundary (in addition to inside the boundary)
+    :param crop: bool; crop output extent to match the extent of the data
     :return: rasterio dataset object in 'r+' mode
     """
     src_path = src.name
@@ -164,7 +168,7 @@ def clipRaster_wShape(src, shape_path, out_file):
         shapes = [feature['geometry'] for feature in shapefile]
 
     with rasterio.open(src_path) as new_src:
-        out_image, out_transform = rasterio.mask.mask(new_src, shapes, all_touched=True, crop=True)
+        out_image, out_transform = rasterio.mask.mask(new_src, shapes, all_touched=all_touched, crop=crop)
         out_meta = new_src.meta
 
     out_meta.update(
