@@ -476,6 +476,7 @@ def rasterToPoly(src, out_file, shp_value_field='Value', multiprocess=False, num
 
         # Function to generate blocks
         print('[rasterToPoly - Generating data blocks from raster]')
+
         def gen_blocks():
             for i in range(0, height, block_size):
                 for j in range(0, width, block_size):
