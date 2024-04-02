@@ -7,8 +7,10 @@ Created on Mon Feb  21 09:00:00 2024
 #import os
 import numpy as np
 import fiona
-#from fiona import Feature, Geometry
-from shapely.geometry import mapping, shape
+from fiona.crs import CRS
+from fiona import Feature, Geometry
+from shapely.geometry import mapping, shape, Point
+from pyproj import Transformer
 import geopandas as gpd
 
 
@@ -73,7 +75,7 @@ def copyShapefile(src, out_path):
 def getShapeGDF(in_path):
     """
     Function returns a GeoDataFrame of the shapefile
-    :param in_path: path to shapefile
+    :param in_path: string; path to shapefile
     :return: GeoDataFrame object
     """
     return gpd.read_file(in_path)
@@ -82,10 +84,55 @@ def getShapeGDF(in_path):
 def getShapefile(in_path):
     """
     Function returns a fiona collection object representing the shapefile
-    :param in_path: path to shapefile
+    :param in_path: string; path to shapefile
     :return: fiona collection object in read mode
     """
     return fiona.open(in_path, 'r')
+
+
+def projectGDF(gdf, new_crs, out_path):
+    """
+    Function returns a reprojected GeoDataFrame of the shapefile
+    :param gdf: input GeoDataFrame object
+    :param new_crs: int; EPSG code for new projection
+    :param out_path: string; output path to new shapefile
+    :return: GeoDataFrame object
+    """
+    # Change CRS to new_crs
+    new_gdf = gdf.to_crs(epsg=new_crs)
+
+    # Save new_gdf to out_path
+    new_gdf.to_file(out_path)
+
+    return new_gdf
+
+
+def projectShapefile(src, new_crs, out_path):
+    """
+    Function returns a fiona collection object representing the shapefile
+    :param src: fiona collection object
+    :param new_crs: int; EPSG code for new projection
+    :param out_path: string; output path to new shapefile
+    :return: fiona collection object in read mode
+    """
+    src_crs = src.crs
+    out_crs = CRS.from_epsg(new_crs)
+    new_feats = []
+
+    # Transform coordinates with new projection
+    transformer = Transformer.from_crs(src_crs, out_crs)
+    for feat in src:
+        x, y = feat['geometry']['coordinates']
+        x_, y_ = transformer.transform(x, y)
+        new_feats.append({'geometry': mapping(Point(x_, y_)),
+                          'properties': feat.properties})
+
+    # Create new shapefile
+    schema = src.schema
+    with fiona.open(out_path, mode='w', driver='ESRI Shapefile', schema=schema, crs=out_crs) as dst:
+        for feat in new_feats:
+            dst.write(feat)
+    return fiona.open(out_path, 'r')
 
 def main():
     in_path = r'S:\1993\1\03_MappingAnalysisData\02_Data\04_ROS_Distance_Analysis\Scratch\CommunityCluster_Distance_Lines.shp'

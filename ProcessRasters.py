@@ -17,7 +17,7 @@ from rasterio import shutil
 from rasterio.features import shapes
 from rasterio.merge import merge
 from rasterio.warp import calculate_default_transform, reproject, Resampling
-from rasterio.windows import Window
+#from rasterio.windows import Window
 # from rasterio.io import MemoryFile
 # from rasterio.transform import Affine
 from shapely.geometry import box, shape
@@ -663,7 +663,6 @@ def updateRaster(src, array, nodata_val=None):
         )
     src_path = src.name     # Get path of input source dataset
     src.close()             # Close input source dataset
-    #os.remove(src_path)     # Delete input source dataset
 
     # Write new data to source out_path (replace original data)
     with rio.open(src_path, 'r+', **profile) as dst:
