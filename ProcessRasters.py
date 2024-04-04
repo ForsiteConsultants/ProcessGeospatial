@@ -318,6 +318,15 @@ def getRaster(in_path):
     return rio.open(in_path, 'r+')
 
 
+def getResolution(src):
+    """
+    Function to get the x & y grid cell resolution of a raster dataset
+    :param src: input rasterio dataset object
+    :return: tuple of floats; (x resolution, y resolution)
+    """
+    return src.res
+
+
 def getMax(in_rasters, out_file):
     """
     Function creates a new raster from the maximum values of all input rasters
@@ -367,6 +376,7 @@ def getMin(in_rasters, out_file):
 
 def getSlope(src, out_file, slopeformat):
     """
+    Function to calculate slope from an elevation raster
     :param src: input rasterio dataset object
     :param out_file: the path and name of the output file
     :param slopeformat: slope format ("degree" or "percent")
@@ -385,7 +395,8 @@ def getSlope(src, out_file, slopeformat):
 
 def Integer(src, datatype, nodata_val):
     """
-    :param src:
+    Function to convert a raster to an Integer data type
+    :param src: input rasterio dataset object
     :param datatype:
     :param nodata_val:
     :return:
