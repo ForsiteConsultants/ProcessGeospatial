@@ -7,8 +7,10 @@ Created on Mon Jan 18 13:25:52 2024
 import os
 import numpy as np
 import fiona
+import pandas
 import pyproj as pp
 from osgeo import gdal
+import geopandas as gpd
 from geopandas import GeoDataFrame
 import rasterio as rio
 import rasterio.mask
@@ -25,9 +27,15 @@ from shapely.affinity import translate
 from joblib import Parallel, delayed
 
 
-def _process_block(block, transform, window):
+def _process_block(block: np.ndarray,
+                   transform: rio.io.DatasetReaderBase,
+                   window: rio.io.WindowMethodsMixin) -> list:
     """
     Process a block of the raster array and return shapes
+    :param block:
+    :param transform:
+    :param window:
+    :return: list of shapes
     """
     data = block
     # Calculate the translation values for the window
@@ -39,17 +47,19 @@ def _process_block(block, transform, window):
     return [(translate(shape(s), xoff=dx, yoff=dy), v) for s, v in shapes(data, transform=transform)]
 
 
-def arrayToRaster(array, out_file, rasprofile, nodata_val=None, data_type=None):
+def arrayToRaster(array: np.ndarray, out_file: str, ras_profile: dict,
+                  nodata_val: int | float = None, data_type=None) -> rio.DatasetReader:
     """
+    Function to convert a numpy array to a raster
     :param array: input numpy array
-    :param out_file:
-    :param rasprofile:
-    :param nodata_val:
-    :param data_type:
-    :return: rasterio dataset object
+    :param out_file: str; path (with name) to save output raster
+    :param ras_profile: dict; profile of reference rasterio dataset reader object
+    :param nodata_val: int or float; value to assign as "no data"
+    :param data_type: int or float: data type of new raster (int or float)
+    :return: rasterio dataset reader object
     """
     # Get profile
-    profile = rasprofile
+    profile = ras_profile
 
     # Update profile
     profile.update(
@@ -75,11 +85,15 @@ def arrayToRaster(array, out_file, rasprofile, nodata_val=None, data_type=None):
     return rio.open(out_file, 'r+')
 
 
-def changeDtype(src, datatype, nodata_val=None):
+def changeDtype(src: rio.DatasetReader,
+                datatype: str,
+                nodata_val: int | float = None) -> rio.DatasetReader:
     """
-    :param src: input rasterio dataset object
-    :param nodata_val:
-    :return: rasterio dataset object in 'r+' mode
+    Function to change a raster's datatype to int or float
+    :param src: input rasterio dataset reader object
+    :param datatype: new data type (int or float)
+    :param nodata_val: int or float; value to assign as "no data"
+    :return: rasterio dataset reader object in 'r+' mode
     """
     if nodata_val is None:
         nodata_val = src.profile['nodata']
@@ -91,7 +105,6 @@ def changeDtype(src, datatype, nodata_val=None):
         src_array = np.asarray(src_array, dtype=int)
     else:
         src_array = np.asarray(src_array, dtype=float)
-
 
     # Get file path of dataset object
     src_path = src.name
@@ -117,15 +130,19 @@ def changeDtype(src, datatype, nodata_val=None):
     return rio.open(src_path, 'r+')
 
 
-def clipRaster_wRas(src, mask_src, out_file, all_touched=True, crop=True):
+def clipRaster_wRas(src: rio.DatasetReader,
+                    mask_src: rio.DatasetReader,
+                    out_file: str,
+                    all_touched: bool = True,
+                    crop: bool = True) -> rio.DatasetReader:
     """
     Function to clip a raster with the extent of another raster
-    :param src: rasterio dataset object being masked
-    :param mask_src: rasterio dataset object used as a mask
+    :param src: rasterio dataset reader object being masked
+    :param mask_src: rasterio dataset reader object used as a mask
     :param out_file: location and name to save output raster
     :param all_touched: bool; include all cells that touch the raster boundary (in addition to inside the boundary)
     :param crop: bool; crop output extent to match the extent of the data
-    :return: rasterio dataset object in 'r+' mode
+    :return: rasterio dataset reader object in 'r+' mode
     """
     geometry = [box(*mask_src.bounds)]
 
@@ -150,15 +167,19 @@ def clipRaster_wRas(src, mask_src, out_file, all_touched=True, crop=True):
     return rio.open(out_file, 'r+')
 
 
-def clipRaster_wShape(src, shape_path, out_file, all_touched=True, crop=True):
+def clipRaster_wShape(src: rio.DatasetReader,
+                      shape_path: str,
+                      out_file: str,
+                      all_touched: bool = True,
+                      crop: bool = True) -> rio.DatasetReader:
     """
     Function to clip a raster with a shapefile
-    :param src: input rasterio dataset object
+    :param src: input rasterio dataset reader object
     :param shape_path: file path to clip shapefile
-    :param out_file: location and name to save output raster
+    :param out_file: str; location and name to save output raster
     :param all_touched: bool; include all cells that touch the shapefile boundary (in addition to inside the boundary)
     :param crop: bool; crop output extent to match the extent of the data
-    :return: rasterio dataset object in 'r+' mode
+    :return: rasterio dataset reader object in 'r+' mode
     """
     src_path = src.name
     src.close()
@@ -185,21 +206,25 @@ def clipRaster_wShape(src, shape_path, out_file, all_touched=True, crop=True):
     return rio.open(out_file, 'r+')
 
 
-def copyRaster(src, out_file):
+def copyRaster(src: rio.DatasetReader,
+               out_file: str) -> rio.DatasetReader:
     """
-    :param src: input rasterio dataset object
-    :param out_file:
-    :return: rasterio dataset object in 'r+' mode
+    Function to copy a raster to a new location
+    :param src: input rasterio dataset reader object
+    :param out_file: str; location and name to save output raster
+    :return: rasterio dataset reader object in 'r+' mode
     """
     shutil.copyfiles(src.name, out_file)
     return rio.open(out_file, 'r+')
 
 
-def exportRaster(src, out_file):
+def exportRaster(src: rio.DatasetReader,
+                 out_file: str) -> rio.DatasetReader:
     """
-    :param src: input rasterio dataset object
-    :param out_file:
-    :return: rasterio dataset object
+    Function to export a raster to a new location
+    :param src: input rasterio dataset reader object
+    :param out_file: str; location and name to save output raster
+    :return: rasterio dataset reader object
     """
     # Get profile
     src_profile = src.profile
@@ -222,11 +247,52 @@ def exportRaster(src, out_file):
     return
 
 
-def getAspect(src, out_file):
+def extractValuesAtPoints(in_pts: str | GeoDataFrame,
+                          src: rio.DatasetReader,
+                          value_field: str,
+                          out_type: str = 'series',
+                          new_pts_path: str = None) -> pandas.Series | None:
     """
-    :param src: a rasterio dataset object
+    Function to extract raster values at shapefile point locations
+    :param in_pts: str or GeoPandas GeoDataFrame object; path to, or a GeoDataFrame object of, the point shapefile
+    :param src: input rasterio dataset reader object
+    :param value_field: str; name of field to contain raster values
+    :param out_type: str; type of output ("series", "shp", "csv")
+    :param new_pts_path: str;
+    :return: a pandas series object, or None (if output file requested)
+    """
+    # If in_pts is not str or GeoDataFrame type, raise error
+    if not isinstance(in_pts, (str, GeoDataFrame)):
+        raise TypeError('Parameter "in_pts" must be a str or GeoPandas GeoDataFrame type')
+
+    # If in_pts is str type, get GeoDataFrame object from path
+    if isinstance(in_pts, str):
+        gdf = gpd.read_file(in_pts)
+
+    # Extract raster values at point locations, and assign to "value_field"
+    gdf[f'{value_field}'] = next(src.sample(zip(gdf['geometry'].x, gdf['geometry'].y)))[0]
+
+    # Return raster point values
+    if out_type == 'series':
+        return gdf[f'{value_field}']
+    elif out_type == 'shp':
+        gdf.to_file(new_pts_path)
+    elif out_type == 'csv':
+        gdf.to_csv(new_pts_path)
+    else:
+        raise TypeError('[ProcessRasters] extractValuesAtPoints() function parameter "out_type" '
+                        'must be either "series", "shp" or "csv"')
+
+    return
+
+
+def getAspect(src: rio.DatasetReader,
+              out_file: str) -> rio.DatasetReader:
+    """
+    Function to generate a slope aspect raster from an elevation dataset
+    :param src: a rasterio dataset reader object
     :param out_file: the path and name of the output file
-    :return: rasterio dataset object
+    :return: rasterio dataset reader object
     """
     # Get file path of dataset object
     src_path = src.name
@@ -238,14 +304,17 @@ def getAspect(src, out_file):
     return rio.open(out_file, 'r+')
 
 
-def getGridCoordinates(src, out_file_x, out_file_y, out_crs=None):
+def getGridCoordinates(src: rio.DatasetReader,
+                       out_file_x: str,
+                       out_file_y: str,
+                       out_crs: str = 'EPSG:4326') -> (rio.DatasetReader, rio.DatasetReader):
     """
     Function returns two X and Y rasters with cell values matching the grid cell coordinates (one for Xs, one for Ys)
-    :param src: a rasterio dataset object
+    :param src: a rasterio dataset reader object
     :param out_file_x: path to output raster for X coordinates
     :param out_file_y: path to output raster for Y coordinates
     :param out_crs: string defining new projection (e.g., 'EPSG:4326')
-    :return: a tuple (X, Y) of rasterio dataset objects in 'r+' mode
+    :return: a tuple (X, Y) of rasterio dataset reader objects in 'r+' mode
     """
     # Get the affine transformation matrix
     transform = src.transform
@@ -294,11 +363,13 @@ def getGridCoordinates(src, out_file_x, out_file_y, out_crs=None):
     return rio.open(out_file_x, 'r+'), rio.open(out_file_y, 'r+')
 
 
-def getHillshade(src, out_file):
+def getHillshade(src: rio.DatasetReader,
+                 out_file: str) -> rio.DatasetReader:
     """
-    :param src: a rasterio dataset object
+    Function to generate a hillshade from an elevation dataset
+    :param src: a rasterio dataset reader object
     :param out_file: the path and name of the output file
-    :return: rasterio dataset object
+    :return: rasterio dataset reader object
     """
     # Get file path of dataset object
     src_path = src.name
@@ -310,32 +381,34 @@ def getHillshade(src, out_file):
     return rio.open(out_file, 'r+')
 
 
-def getRaster(in_path):
+def getRaster(in_path: str) -> rio.DatasetReader:
     """
+    Function to get a rasterio dataset reader object from a raster file path
     :param in_path: path to raster dataset
-    :return: rasterio dataset object in 'r+' mode
+    :return: rasterio dataset reader object in 'r+' mode
     """
     return rio.open(in_path, 'r+')
 
 
-def getResolution(src):
+def getResolution(src: rio.DatasetReader) -> tuple:
     """
     Function to get the x & y grid cell resolution of a raster dataset
-    :param src: input rasterio dataset object
+    :param src: input rasterio dataset reader object
     :return: tuple of floats; (x resolution, y resolution)
     """
     return src.res
 
 
-def getMax(in_rasters, out_file):
+def getMax(in_rasters: list[rio.DatasetReader],
+           out_file: str) -> rio.DatasetReader:
     """
     Function creates a new raster from the maximum values of all input rasters
-    :param in_rasters: list of rasterio dataset objects
+    :param in_rasters: list of rasterio dataset reader objects
     :param out_file: the path and name of the output file
-    :return: rasterio dataset object in 'r+' mode
+    :return: rasterio dataset reader object in 'r+' mode
     """
     if not isinstance(in_rasters, list):
-        raise Exception('[ProcessRasters] getMax() param "inrasters" must be a list of rasterio objects')
+        raise TypeError('[ProcessRasters] getMax() param "inrasters" must be a list of rasterio objects')
 
     profile = in_rasters[0].profile
     array_list = [ras.read() for ras in in_rasters]
@@ -350,15 +423,16 @@ def getMax(in_rasters, out_file):
     return rio.open(out_file, 'r+')
 
 
-def getMin(in_rasters, out_file):
+def getMin(in_rasters: list[rio.DatasetReader],
+           out_file: str) -> rio.DatasetReader:
     """
     Function creates a new raster from the minimum values of all input rasters
-    :param in_rasters: list of rasterio dataset objects
+    :param in_rasters: list of rasterio dataset reader objects
     :param out_file: the path and name of the output file
-    :return: rasterio dataset object in 'r+' mode
+    :return: rasterio dataset reader object in 'r+' mode
     """
     if not isinstance(in_rasters, list):
-        raise Exception('[ProcessRasters] getMax() param "inrasters" must be a list of rasterio objects')
+        raise TypeError('[ProcessRasters] getMax() param "inrasters" must be a list of rasterio objects')
 
     profile = in_rasters[0].profile
     array_list = [ras.read() for ras in in_rasters]
@@ -373,14 +447,15 @@ def getMin(in_rasters, out_file):
     return rio.open(out_file, 'r+')
 
 
-
-def getSlope(src, out_file, slopeformat):
+def getSlope(src: rio.DatasetReader,
+             out_file: str,
+             slopeformat: str) -> rio.DatasetReader:
     """
     Function to calculate slope from an elevation raster
-    :param src: input rasterio dataset object
+    :param src: input rasterio dataset reader object
     :param out_file: the path and name of the output file
     :param slopeformat: slope format ("degree" or "percent")
-    :return: rasterio dataset object in 'r+' mode
+    :return: rasterio dataset reader object in 'r+' mode
     """
     # Get file path of dataset object
     src_path = src.name
@@ -393,13 +468,15 @@ def getSlope(src, out_file, slopeformat):
     return rio.open(out_file, 'r+')
 
 
-def Integer(src, datatype, nodata_val):
+def Integer(src: rio.DatasetReader,
+            datatype: np.dtype,
+            nodata_val: int) -> rio.DatasetReader:
     """
     Function to convert a raster to an Integer data type
-    :param src: input rasterio dataset object
-    :param datatype:
-    :param nodata_val:
-    :return:
+    :param src: input rasterio dataset reader object
+    :param datatype: numpy dtype; eg., signed (np.int8, np.int32) or unsigned (np.uint8, np.unit32)
+    :param nodata_val: int; value to assign as no data
+    :return: rasterio dataset reader object in 'r+' mode
     """
     # Convert array values to integer type
     int_array = src.read()
@@ -424,18 +501,17 @@ def Integer(src, datatype, nodata_val):
     with rio.open(src_path, 'w', **profile) as dst:
         # Write data to new raster
         dst.write(int_array)
-    # Close new raster
-    dst.close()
 
     return rio.open(src_path, 'r+')
 
 
-def mosaicRasters(path_list, out_file):
+def mosaicRasters(path_list: list[str],
+                  out_file:str) -> rio.DatasetReader:
     """
     Function mosaics a list of rasterio objects to a new raster
     :param path_list: list of paths to raster datasets
     :param out_file: location and name to save output raster
-    :return: rasterio dataset object
+    :return: rasterio dataset reader object in 'r+' mode
     """
     mosaic_list = []
 
@@ -461,10 +537,15 @@ def mosaicRasters(path_list, out_file):
     return rio.open(out_file, 'r+')
 
 
-def rasterToPoly(src, out_file, shp_value_field='Value', multiprocess=False, num_cores=2, block_size=256):
+def rasterToPoly(src: rio.DatasetReader,
+                 out_file: str,
+                 shp_value_field: str = 'Value',
+                 multiprocess: bool = False,
+                 num_cores: int = 2,
+                 block_size: int = 256) -> None:
     """
     Function to convert a raster to a polygon shapefile
-    :param src: input rasterio dataset object
+    :param src: input rasterio dataset reader object
     :param out_file: string; location and name to save output polygon shapefile
     :param shp_value_field: string; name of the shapefile field that will contain the raster values (Default = "Value")
     :param multiprocess: bool; use multiprocessing for raster to polygon conversion (True, False)
@@ -517,13 +598,15 @@ def rasterToPoly(src, out_file, shp_value_field='Value', multiprocess=False, num
     return
 
 
-def reprojRaster(src, out_file, out_crs):
+def reprojRaster(src: rio.DatasetReader,
+                 out_file: str,
+                 out_crs: str = 'EPSG:4326') -> rio.DatasetReader:
     """
     Function to reproject a raster to a different coordinate system
-    :param src: input rasterio dataset object
+    :param src: input rasterio dataset reader object
     :param out_file: location and name to save output raster
     :param out_crs: string defining new projection (e.g., 'EPSG:4326')
-    :return: rasterio dataset object
+    :return: rasterio dataset reader object in 'r+' mode
     """
     # Calculate transformation needed to reproject raster to out_crs
     transform, width, height = calculate_default_transform(
@@ -553,12 +636,13 @@ def reprojRaster(src, out_file, out_crs):
     return rio.open(out_file, 'r+')
 
 
-def sumRasters(src, inrasters):
+def sumRasters(src: rio.DatasetReader,
+               inrasters: rio.DatasetReader | list[rio.DatasetReader]) -> rio.DatasetReader:
     """
     Function to sum values with an existing dataset
-    :param src: input rasterio dataset object
-    :param inrasters: raster or list or rasters to add to src raster
-    :return: rasterio dataset object
+    :param src: input rasterio dataset reader object
+    :param inrasters: raster or list of rasters to add to src raster
+    :return: rasterio dataset reader object in 'r+' mode
     """
     sum_result = src.read()
 
@@ -586,11 +670,13 @@ def sumRasters(src, inrasters):
     return rio.open(src_path, 'r+')
 
 
-def tifToASCII(src, out_file):
+def tifToASCII(src: rio.DatasetReader,
+               out_file: str) -> rio.DatasetReader:
     """
-    :param src: input rasterio dataset object
-    :param out_file:
-    :return: new rasterio dataset object in 'r+' mode
+    Function to convert a TIFF to an ASCII file
+    :param src: input rasterio dataset reader object
+    :param out_file: str; path (with name) to save ASCII file
+    :return: new rasterio dataset reader object in 'r+' mode
     """
     #src_path = in_src.name
     #in_src.close()
@@ -630,12 +716,13 @@ def tifToASCII(src, out_file):
     return rio.open(out_file, 'r+')
 
 
-def toMultiband(path_list, out_file):
+def toMultiband(path_list: list[str],
+                out_file: str) -> rio.DatasetReader:
     """
     Function to merge multiple single-band rasters into a new multiband raster
     :param path_list: list of strings; list of paths to single-band raster datasets
     :param out_file: string; location and name to save output raster
-    :return: rasterio dataset object in 'r+' mode
+    :return: rasterio dataset reader object in 'r+' mode
     """
     array_list = [getRaster(path).read(1, masked=True) for path in path_list]
 
@@ -651,13 +738,15 @@ def toMultiband(path_list, out_file):
     return rio.open(out_file, 'r+')
 
 
-def updateRaster(src, array, nodata_val=None):
+def updateRaster(src: rio.DatasetReader,
+                 array: np.ndarray,
+                 nodata_val: int | float = None) -> rio.DatasetReader:
     """
     Function to update values in a raster with an input array
-    :param src: input rasterio dataset object (TIFF only)
+    :param src: input rasterio dataset reader object (TIFF only)
     :param array: numpy array object
     :param nodata_val: value to assign as "No Data"
-    :return: rasterio dataset object
+    :return: rasterio dataset reader object in 'r+' mode
     """
     # Get profile of source dataset
     profile = src.profile
@@ -689,8 +778,8 @@ def updateRaster(src, array, nodata_val=None):
 #     """
 #     Function to update values in a large raster with values from a smaller raster.
 #     The smaller raster must fit within the extent of the large raster.
-#     :param src_lrg: input rasterio dataset object of larger raster
-#     :param src_small: input rasterio dataset object of smaller raster
+#     :param src_lrg: input rasterio dataset reader object of larger raster
+#     :param src_small: input rasterio dataset reader object of smaller raster
 #     :param nodata_val: the value corresponding to no data; used to exclude those values from the update
 #     :return: None
 #     """
