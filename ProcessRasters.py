@@ -258,7 +258,7 @@ def extractValuesAtPoints(in_pts: Union[str, GeoDataFrame],
                           new_pts_path: Union[str, None] = None) -> Union[pandas.Series, None]:
     """
     Function to extract raster values at shapefile point locations
-    :param in_pts: str or GeoPandas GeoDataFrame object; path to, or a GeoDataFrame object of, the point shapefile
+    :param in_pts: path to, or a GeoDataFrame object of, the point shapefile
     :param src: input rasterio dataset reader object
     :param value_field: name of field to contain raster values
     :param out_type: type of output ("series", "shp", "csv")
