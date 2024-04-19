@@ -60,7 +60,7 @@ def copyShapefile(src: fio.Collection,
     """
     Function to add a field to an existing shapefile
     :param src: fiona collection object
-    :param out_path: string; path to new output shapefile
+    :param out_path: path to new output shapefile
     :return: updated fiona collection object in read mode
     """
     src_schema = src.schema.copy()
@@ -80,7 +80,7 @@ def copyShapefile(src: fio.Collection,
 def getShapeGDF(in_path: str) -> gpd.GeoDataFrame:
     """
     Function returns a GeoDataFrame of the shapefile
-    :param in_path: string; path to shapefile
+    :param in_path: path to shapefile
     :return: GeoDataFrame object
     """
     return gpd.read_file(in_path)
@@ -101,8 +101,8 @@ def projectGDF(gdf: gpd.GeoDataFrame,
     """
     Function returns a reprojected GeoDataFrame of the shapefile
     :param gdf: input GeoDataFrame object
-    :param new_crs: int; EPSG code for new projection
-    :param out_path: string; output path to new shapefile
+    :param new_crs: EPSG code for new projection
+    :param out_path: output path to new shapefile
     :return: GeoDataFrame object
     """
     # Change CRS to new_crs
@@ -120,8 +120,8 @@ def projectShapefile(src: fio.Collection,
     """
     Function returns a fiona collection object representing the shapefile
     :param src: fiona collection object
-    :param new_crs: int; EPSG code for new projection
-    :param out_path: string; output path to new shapefile
+    :param new_crs: EPSG code for new projection
+    :param out_path: output path to new shapefile
     :return: fiona collection object in read mode
     """
     src_crs = src.crs
