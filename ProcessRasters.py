@@ -27,8 +27,6 @@ from shapely.geometry import box, shape
 from shapely.affinity import translate
 from joblib import Parallel, delayed
 
-import ProcessRasters
-
 
 def _process_block(block: np.ndarray,
                    transform: rio.io.DatasetReaderBase,
@@ -301,7 +299,7 @@ def getArea(src: rio.DatasetReader,
     if not isinstance(search_value, list):
         search_value = [search_value]
 
-    x, y = ProcessRasters.getResolution(src)
+    x, y = getResolution(src)
     src_array = src.read()
     value_count = 0
     for value in search_value:
