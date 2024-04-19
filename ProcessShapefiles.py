@@ -4,25 +4,29 @@ Created on Mon Feb  21 09:00:00 2024
 
 @author: Gregory A. Greene
 """
-#import os
 import numpy as np
-import fiona
+import fiona as fio
 from fiona.crs import CRS
-from fiona import Feature, Geometry
+# from fiona import Feature, Geometry
 from shapely.geometry import mapping, shape, Point
 from pyproj import Transformer
 import geopandas as gpd
+from typing import Union
 
 
-def addField(src, out_path, new_field, dtype, field_value=np.nan):
+def addField(src: fio.Collection,
+             out_path: str,
+             new_field: Union[str, list[str]],
+             dtype: Union[str, list[str]],
+             field_value: any = np.nan) -> fio.Collection:
     """
     Function to add a field to an existing shapefile.
     At present, this function only works by creating a new shapefile.
     :param src: fiona collection object
-    :param out_path: string; path to new output shapefile
-    :param new_field: string or list of strings; name of new field
-    :param dtype: string or list of strings; data type of new field (default: 'float')
-    :param field_value: value matching dtype; value to assign to new field
+    :param out_path: path to new output shapefile
+    :param new_field: name of new field
+    :param dtype: data type of new field (default: 'float')
+    :param field_value: value to assign to new field; must match dtype
     :return: updated fiona collection object in read mode
     """
     src_crs = src.crs
@@ -33,7 +37,7 @@ def addField(src, out_path, new_field, dtype, field_value=np.nan):
     else:
         src_schema['properties'][new_field] = dtype
 
-    with fiona.open(out_path, 'w', 'ESRI Shapefile', src_schema, src_crs) as dst:
+    with fio.open(out_path, 'w', 'ESRI Shapefile', src_schema, src_crs) as dst:
         for elem in src:
             if isinstance(new_field, list):
                 for i, field in enumerate(new_field):
@@ -48,10 +52,11 @@ def addField(src, out_path, new_field, dtype, field_value=np.nan):
                 }
             )
 
-    return fiona.open(out_path, 'r')
+    return fio.open(out_path, 'r')
 
 
-def copyShapefile(src, out_path):
+def copyShapefile(src: fio.Collection,
+                  out_path: str) -> fio.Collection:
     """
     Function to add a field to an existing shapefile
     :param src: fiona collection object
@@ -60,7 +65,7 @@ def copyShapefile(src, out_path):
     """
     src_schema = src.schema.copy()
 
-    with fiona.open(out_path, 'w', 'ESRI Shapefile', src_schema, src.crs) as dst:
+    with fio.open(out_path, 'w', 'ESRI Shapefile', src_schema, src.crs) as dst:
         for elem in src:
             dst.write(
                 {
@@ -69,10 +74,10 @@ def copyShapefile(src, out_path):
                 }
             )
 
-    return fiona.open(out_path, 'r')
+    return fio.open(out_path, 'r')
 
 
-def getShapeGDF(in_path):
+def getShapeGDF(in_path: str) -> gpd.GeoDataFrame:
     """
     Function returns a GeoDataFrame of the shapefile
     :param in_path: string; path to shapefile
@@ -81,16 +86,18 @@ def getShapeGDF(in_path):
     return gpd.read_file(in_path)
 
 
-def getShapefile(in_path):
+def getShapefile(in_path: str) -> fio.Collection:
     """
     Function returns a fiona collection object representing the shapefile
-    :param in_path: string; path to shapefile
+    :param in_path: path to shapefile
     :return: fiona collection object in read mode
     """
-    return fiona.open(in_path, 'r')
+    return fio.open(in_path, 'r')
 
 
-def projectGDF(gdf, new_crs, out_path):
+def projectGDF(gdf: gpd.GeoDataFrame,
+               new_crs: int,
+               out_path: str) -> gpd.GeoDataFrame:
     """
     Function returns a reprojected GeoDataFrame of the shapefile
     :param gdf: input GeoDataFrame object
@@ -107,7 +114,9 @@ def projectGDF(gdf, new_crs, out_path):
     return new_gdf
 
 
-def projectShapefile(src, new_crs, out_path):
+def projectShapefile(src: fio.Collection,
+                     new_crs: int,
+                     out_path: str) -> fio.Collection:
     """
     Function returns a fiona collection object representing the shapefile
     :param src: fiona collection object
@@ -129,23 +138,7 @@ def projectShapefile(src, new_crs, out_path):
 
     # Create new shapefile
     schema = src.schema
-    with fiona.open(out_path, mode='w', driver='ESRI Shapefile', schema=schema, crs=out_crs) as dst:
+    with fio.open(out_path, mode='w', driver='ESRI Shapefile', schema=schema, crs=out_crs) as dst:
         for feat in new_feats:
             dst.write(feat)
-    return fiona.open(out_path, 'r')
-
-def main():
-    in_path = r'S:\1993\1\03_MappingAnalysisData\02_Data\04_ROS_Distance_Analysis\Scratch\CommunityCluster_Distance_Lines.shp'
-    out_path = r'S:\1993\1\03_MappingAnalysisData\02_Data\04_ROS_Distance_Analysis\ROS_Distance_Modelling_Results\Inputs\Distance_Lines.shp'
-
-    in_lines = getShapefile(in_path)
-    new_lines = copyShapefile(in_lines, out_path)
-
-    fields = ['rosDist30', 'rosDist60', 'rosDist120']
-    dtypes = ['float', 'float', 'float']
-
-    new_lines = addField(in_lines, out_path=out_path, new_field=fields, dtype=dtypes)
-
-
-if __name__ == '__main__':
-    main()
+    return fio.open(out_path, 'r')
