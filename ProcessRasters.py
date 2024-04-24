@@ -416,24 +416,6 @@ def getHillshade(src: rio.DatasetReader,
     return rio.open(out_file, 'r+')
 
 
-def getRaster(in_path: str) -> rio.DatasetReader:
-    """
-    Function to get a rasterio dataset reader object from a raster file path
-    :param in_path: path to raster dataset
-    :return: rasterio dataset reader object in 'r+' mode
-    """
-    return rio.open(in_path, 'r+')
-
-
-def getResolution(src: rio.DatasetReader) -> tuple:
-    """
-    Function to get the x & y grid cell resolution of a raster dataset
-    :param src: input rasterio dataset reader object
-    :return: tuple of floats; (x resolution, y resolution)
-    """
-    return src.res
-
-
 def getMax(in_rasters: list[rio.DatasetReader],
            out_file: str) -> rio.DatasetReader:
     """
@@ -480,6 +462,24 @@ def getMin(in_rasters: list[rio.DatasetReader],
         dst.write(max_array)
 
     return rio.open(out_file, 'r+')
+
+
+def getRaster(in_path: str) -> rio.DatasetReader:
+    """
+    Function to get a rasterio dataset reader object from a raster file path
+    :param in_path: path to raster dataset
+    :return: rasterio dataset reader object in 'r+' mode
+    """
+    return rio.open(in_path, 'r+')
+
+
+def getResolution(src: rio.DatasetReader) -> tuple:
+    """
+    Function to get the x & y grid cell resolution of a raster dataset
+    :param src: input rasterio dataset reader object
+    :return: tuple of floats; (x resolution, y resolution)
+    """
+    return src.res
 
 
 def getSlope(src: rio.DatasetReader,
