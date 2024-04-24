@@ -10,7 +10,7 @@ import numpy as np
 import fiona
 import pandas
 import pyproj as pp
-from osgeo import gdal
+# from osgeo import gdal
 import geopandas as gpd
 from geopandas import GeoDataFrame
 import rasterio as rio
@@ -20,6 +20,7 @@ from rasterio import shutil
 from rasterio.features import shapes
 from rasterio.merge import merge
 from rasterio.warp import calculate_default_transform, reproject, Resampling
+from rasterio.windows import Window
 # from rasterio.windows import Window
 # from rasterio.io import MemoryFile
 # from rasterio.transform import Affine
@@ -86,6 +87,16 @@ def arrayToRaster(array: np.ndarray,
 
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(out_file, 'r+')
+
+
+def calculateStatistics(src: rio.DatasetReader) -> None:
+    """
+    Function to calculate statistics of a rasterio dataset reader object
+    :param src: input rasterio dataset reader object
+    :return: rasterio dataset reader object in 'r+' mode
+    """
+    for bidx in src.indexes:
+        src.statistics(bidx, clear_cache=True)
 
 
 def changeDtype(src: rio.DatasetReader,
