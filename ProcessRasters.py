@@ -82,8 +82,8 @@ def arrayToRaster(array: np.ndarray,
     with rio.open(out_file, 'w', **profile) as dst:
         # Write data to new raster
         dst.write(array)
-    # Close new raster
-    dst.close()
+        # Calculate new statistics
+        calculateStatistics(dst)
 
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(out_file, 'r+')
@@ -140,8 +140,8 @@ def changeDtype(src: rio.DatasetReader,
     with rio.open(src_path, 'w', **profile) as dst:
         # Write data to new raster
         dst.write(src_array)
-    # Close new raster
-    dst.close()
+        # Calculate new statistics
+        calculateStatistics(dst)
 
     return rio.open(src_path, 'r+')
 
@@ -176,8 +176,8 @@ def clipRaster_wRas(src: rio.DatasetReader,
     with rio.open(out_file, 'w', **out_profile) as dst:
         # Write data to new raster
         dst.write(out_array)
-    # Close new raster
-    dst.close()
+        # Calculate new statistics
+        calculateStatistics(dst)
 
     return rio.open(out_file, 'r+')
 
@@ -217,6 +217,8 @@ def clipRaster_wShape(src: rio.DatasetReader,
 
     with rasterio.open(out_file, 'w', **out_meta) as dst:
         dst.write(out_image)
+        # Calculate new statistics
+        calculateStatistics(dst)
 
     return rio.open(out_file, 'r+')
 
@@ -256,8 +258,8 @@ def exportRaster(src: rio.DatasetReader,
     with rio.open(out_file, 'w', **src_profile) as dst:
         # Write data to new raster
         dst.write(src_array)
-    # Close new raster
-    dst.close()
+        # Calculate new statistics
+        calculateStatistics(dst)
 
     return
 
@@ -336,6 +338,11 @@ def getAspect(src: rio.DatasetReader,
                        src_path,
                        'aspect')
 
+    # Calculate new statistics
+    temp_src = getRaster(out_file)
+    calculateStatistics(temp_src)
+    temp_src.close()
+
     return rio.open(out_file, 'r+')
 
 
@@ -387,13 +394,15 @@ def getGridCoordinates(src: rio.DatasetReader,
     with rio.open(out_file_x, 'w', **profile) as dst:
         # Write data to out_path_x
         dst.write(lon, 1)
-    dst.close()
+        # Calculate new statistics
+        calculateStatistics(dst)
 
     # Write Y coordinate data to out_path_y
     with rio.open(out_file_y, 'w', **profile) as dst:
         # Write data to out_path_y
         dst.write(lat, 1)
-    dst.close()
+        # Calculate new statistics
+        calculateStatistics(dst)
 
     return rio.open(out_file_x, 'r+'), rio.open(out_file_y, 'r+')
 
@@ -412,6 +421,11 @@ def getHillshade(src: rio.DatasetReader,
     gdal.DEMProcessing(out_file,
                        src_path,
                        'hillshade')
+
+    # Calculate new statistics
+    temp_src = getRaster(out_file)
+    calculateStatistics(temp_src)
+    temp_src.close()
 
     return rio.open(out_file, 'r+')
 
@@ -500,6 +514,11 @@ def getSlope(src: rio.DatasetReader,
                        'slope',
                        slopeFormat=slopeformat)
 
+    # Calculate new statistics
+    temp_src = getRaster(out_file)
+    calculateStatistics(temp_src)
+    temp_src.close()
+
     return rio.open(out_file, 'r+')
 
 
@@ -567,7 +586,8 @@ def mosaicRasters(path_list: list[str],
 
     with rio.open(out_file, 'w', **out_meta) as dst:
         dst.write(mosaic)
-    dst.close()
+        # Calculate new statistics
+        calculateStatistics(dst)
 
     return rio.open(out_file, 'r+')
 
@@ -698,8 +718,8 @@ def sumRasters(src: rio.DatasetReader,
     with rio.open(src_path, 'w', **profile) as dst:
         # Write sum data to source raster
         dst.write(sum_result.astype(src.dtypes[0]))
-    # Close source raster
-    dst.close()
+        # Calculate new statistics
+        calculateStatistics(dst)
 
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(src_path, 'r+')
@@ -804,6 +824,8 @@ def updateRaster(src: rio.DatasetReader,
             dst.write(array[0], band)
         else:
             dst.write(array)
+        # Calculate new statistics
+        calculateStatistics(dst)
 
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(src_path, 'r+')
