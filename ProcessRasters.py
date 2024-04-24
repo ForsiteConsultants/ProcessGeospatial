@@ -98,6 +98,8 @@ def calculateStatistics(src: rio.DatasetReader) -> None:
     for bidx in src.indexes:
         src.statistics(bidx, clear_cache=True)
 
+    return
+
 
 def changeDtype(src: rio.DatasetReader,
                 datatype: str,
