@@ -142,3 +142,15 @@ def projectShapefile(src: fio.Collection,
         for feat in new_feats:
             dst.write(feat)
     return fio.open(out_path, 'r')
+
+
+def saveShapeGDF(gdf: gpd.GeoDataFrame,
+                 out_file: str) -> gpd.GeoDataFrame:
+    """
+    Function to save a GeoDataFrame as a shapefile
+    :param gdf: path to shapefile
+    :param out_file: location and name to save output shapefile
+    :return: GeoDataFrame object
+    """
+    gdf.to_file(out_file)
+    return gpd.read_file(out_file)
