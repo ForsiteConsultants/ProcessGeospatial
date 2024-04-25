@@ -91,7 +91,7 @@ def arrayToRaster(array: np.ndarray,
 
 def calculateStatistics(src: rio.DatasetReader) -> None:
     """
-    Function to calculate statistics of a rasterio dataset reader object
+    Function to recalculate statistics for each band of a rasterio dataset reader object
     :param src: input rasterio dataset reader object
     :return: rasterio dataset reader object in 'r+' mode
     """
