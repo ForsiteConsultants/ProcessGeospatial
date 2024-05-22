@@ -4,6 +4,7 @@ Created on Mon Feb  21 09:00:00 2024
 
 @author: Gregory A. Greene
 """
+import fiona
 import numpy as np
 import fiona as fio
 from fiona.crs import CRS
@@ -90,7 +91,7 @@ def getShapefile(in_path: str) -> fio.Collection:
     """
     Function returns a fiona collection object representing the shapefile
     :param in_path: path to shapefile
-    :return: fiona collection object in read mode
+    :return: fiona collection object in read+ mode
     """
     return fio.open(in_path, 'r')
 
@@ -148,7 +149,7 @@ def saveShapeGDF(gdf: gpd.GeoDataFrame,
                  out_file: str) -> gpd.GeoDataFrame:
     """
     Function to save a GeoDataFrame as a shapefile
-    :param gdf: path to shapefile
+    :param gdf: Geopandas GeoDataFrame object
     :param out_file: location and name to save output shapefile
     :return: GeoDataFrame object
     """

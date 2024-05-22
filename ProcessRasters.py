@@ -17,14 +17,15 @@ import rasterio as rio
 import rasterio.mask
 # from rasterio import CRS
 from rasterio import shutil
-from rasterio.features import shapes
+from rasterio.features import shapes, geometry_window
 from rasterio.merge import merge
+from rasterio.transform import xy
 from rasterio.warp import calculate_default_transform, reproject, Resampling
-from rasterio.windows import Window
+# from rasterio.windows import Window
 # from rasterio.windows import Window
 # from rasterio.io import MemoryFile
 # from rasterio.transform import Affine
-from shapely.geometry import box, shape
+from shapely.geometry import Point, box, shape, mapping
 from shapely.affinity import translate
 from joblib import Parallel, delayed
 
@@ -96,7 +97,11 @@ def calculateStatistics(src: rio.DatasetReader) -> None:
     :return: rasterio dataset reader object in 'r+' mode
     """
     for bidx in src.indexes:
-        src.statistics(bidx, clear_cache=True)
+        try:
+            src.statistics(bidx, clear_cache=True)
+        except rio.errors.StatisticsError as e:
+            print(f'Rasterio Calculate Statistics Error: {e}')
+            continue
 
     return
 
@@ -235,6 +240,32 @@ def copyRaster(src: rio.DatasetReader,
     return rio.open(out_file, 'r+')
 
 
+def defineProjection(src: rio.DatasetReader,
+                     crs: str = 'EPSG:4326') -> rio.DatasetReader:
+    """
+    Function to define the projection of a raster when the projection is missing (i.e., not already defined)
+    :param src: input rasterio dataset reader object
+    :param crs: location and name to save output raster
+    :return: rasterio dataset reader object in 'r+' mode
+    """
+    # Get path of input source dataset
+    src_path = src.name
+
+    # Close input source dataset
+    src.close()
+
+    # Reproject raster and write to out_file
+    with rio.open(src_path, 'r+') as dst:
+        # Update the CRS in the dataset's metadata
+        dst.crs = crs
+
+        # Calculate new statistics
+        calculateStatistics(dst)
+
+    # Return new raster as "readonly" rasterio openfile object
+    return rio.open(src_path, 'r+')
+
+
 def exportRaster(src: rio.DatasetReader,
                  out_file: str) -> rio.DatasetReader:
     """
@@ -301,6 +332,78 @@ def extractValuesAtPoints(in_pts: Union[str, GeoDataFrame],
                         'must be either "series", "shp" or "csv"')
 
     return
+
+
+def extractRowsColsWithPoly(in_poly: Union[str, fiona.Collection],
+                            src: rio.DatasetReader,
+                            id_field: str) -> list:
+    """
+    Function to extract a list of row and column numbers from a raster (numpy array) with a polygon shapefile
+    :param in_poly: path to, or a fiona collection object of, a polygon shapefile
+    :param src: input rasterio dataset reader object
+    :param id_field: name of field in shapefile to use as feature ID
+    :return: a list of row and column numbers [(row1, col1), (row2, col2), ...]
+    """
+    # If in_pts is str type, get fiona dataset object from path
+    if isinstance(in_poly, str):
+        in_poly = fiona.open(in_poly)
+
+    # Get the transform and projection of the raster file
+    crs = src.crs
+    nodata_value = src.nodata
+
+    # Check if the shapefile's CRS matches the raster's CRS
+    shapefile_crs = in_poly.crs
+    if shapefile_crs != crs:
+        raise ValueError('Shapefile and raster CRS do not match')
+
+    output_list = []
+
+    for feature in in_poly:
+        geom = shape(feature['geometry'])
+        district_id = feature['properties'][id_field]
+
+        # Calculate the window of the raster that intersects with the geometry
+        window = geometry_window(src, [mapping(geom)], pad_x=1, pad_y=1)
+
+        # Read the data in the window
+        raster_data = src.read(1, window=window, masked=True)
+
+        # Skip if the window data is empty
+        if (raster_data.size == 0) or np.all(raster_data.mask):
+            continue
+
+        # Get the affine transformation for the window
+        window_transform = src.window_transform(window)
+
+        # Create a mask for the geometry
+        geom_mask = rasterio.features.geometry_mask(
+            geometries=[mapping(geom)],
+            transform=window_transform,
+            invert=True,
+            out_shape=(raster_data.shape[0],
+                       raster_data.shape[1])
+        )
+
+        # Apply the geometry mask and check for NoData values
+        valid_mask = geom_mask & (raster_data != nodata_value)
+
+        # Get the row and column indices of the masked cells
+        rows, cols = np.where(valid_mask)
+
+        # Skip if no rows/cols are found
+        if len(rows) == 0 or len(cols) == 0:
+            continue
+
+        # Convert to global indices
+        global_rows = rows + window.row_off
+        global_cols = cols + window.col_off
+        row_col_pairs = list(zip(global_rows, global_cols))
+
+        # Append the district ID and the row/column indices to the output list
+        output_list.append([district_id, row_col_pairs])
+
+    return output_list
 
 
 def getArea(src: rio.DatasetReader,
@@ -592,6 +695,57 @@ def mosaicRasters(path_list: list[str],
     return rio.open(out_file, 'r+')
 
 
+def rasterToPoints(src: rio.DatasetReader,
+                   out_file: str,
+                   band: int = 1) -> None:
+    """
+    Function to generate a point shapefile from the center of each raster grid cell containing valid data.
+    No data values will be ignored
+    :param src: input rasterio dataset reader object
+    :param out_file: location and name to save output polygon shapefile
+    :param band: integer representing a specific band to extract points from (default = 1)
+    :return: None
+    """
+    # Get the transform, dimensions, projection, and no data value from the raster
+    transform = src.transform
+    width = src.width
+    height = src.height
+    crs = src.crs
+    nodata = src.nodata
+
+    # Read the raster data
+    data = src.read(band)  # Use the first band, unless otherwise specified
+
+    # Prepare a list to store point geometries
+    points = []
+
+    # Loop through each cell in the raster
+    for row in range(height):
+        for col in range(width):
+            # Check if the cell value is not NoData
+            if data[row, col] != nodata:
+                # Calculate the center of the cell
+                x, y = xy(transform, row, col, offset='center')
+                # Create a point geometry and add it to the list
+                points.append(Point(x, y))
+
+    # Define the schema of the shapefile
+    schema = {
+        'geometry': 'Point',
+        'properties': {}
+    }
+
+    # Write points to a shapefile
+    with fiona.open(out_file, 'w', driver='ESRI Shapefile', crs=crs, schema=schema) as shp:
+        for point in points:
+            shp.write({
+                'geometry': mapping(point),
+                'properties': {}
+            })
+
+    return
+
+
 def rasterToPoly(src: rio.DatasetReader,
                  out_file: str,
                  shp_value_field: str = 'Value',
@@ -689,6 +843,60 @@ def reprojRaster(src: rio.DatasetReader,
 
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(out_file, 'r+')
+
+
+def resampleRaster(src: rio.DatasetReader,
+                   ref_src: rio.DatasetReader,
+                   out_file: str,
+                   band: int = 1) -> rio.DatasetReader:
+    """
+    Function to resample the resolution of one raster to match that of a reference raster
+    :param src: input rasterio dataset reader object
+    :param ref_src: reference rasterio dataset reader object
+    :param out_file: location and name to save output raster
+    :param band: integer representing a specific band to extract points from (default = 1)
+    :return: rasterio dataset reader object in 'r+' mode
+    """
+    # Get the transform, dimensions, and projection of the reference dataset
+    ref_transform = ref_src.transform
+    ref_width = ref_src.width
+    ref_height = ref_src.height
+    ref_crs = ref_src.crs
+
+    # Prepare the metadata for the output
+    out_meta = ref_src.meta.copy()
+
+    # Read and resample the source raster data
+    src_transform = src.transform
+    src_crs = src.crs
+
+    # Prepare the destination array
+    out_array = np.empty((ref_height, ref_width), dtype=src.read(1).dtype)
+
+    # Reproject the source raster to the reference raster's grid
+    reproject(
+        source=src.read(band),
+        destination=out_array,
+        src_transform=src_transform,
+        src_crs=src_crs,
+        dst_transform=ref_transform,
+        dst_crs=ref_crs,
+        resampling=Resampling.nearest
+    )
+
+    # Update the metadata with new dimensions and transform
+    out_meta.update({
+        'height': ref_height,
+        'width': ref_width,
+        'transform': ref_transform
+    })
+
+    # Write the resampled data to a new raster file
+    with rasterio.open(out_file, 'w', **out_meta) as dst:
+        dst.write(out_array, 1)
+
+    return rio.open(out_file, 'r+')
+
 
 
 def sumRasters(src: rio.DatasetReader,
