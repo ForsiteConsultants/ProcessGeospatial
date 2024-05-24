@@ -338,7 +338,7 @@ def extractRowsColsWithPoly(in_poly: Union[str, fiona.Collection],
                             src: rio.DatasetReader,
                             id_field: str) -> list:
     """
-    Function to extract a list of row and column numbers from a raster (numpy array) with a polygon shapefile
+    Function to extract a list of global row and column numbers from a raster (numpy array) with a polygon shapefile
     :param in_poly: path to, or a fiona collection object of, a polygon shapefile
     :param src: input rasterio dataset reader object
     :param id_field: name of field in shapefile to use as feature ID
@@ -386,7 +386,7 @@ def extractRowsColsWithPoly(in_poly: Union[str, fiona.Collection],
         )
 
         # Apply the geometry mask and check for NoData values
-        valid_mask = geom_mask & (raster_data != nodata_value)
+        valid_mask = (raster_data.data != nodata_value) * geom_mask
 
         # Get the row and column indices of the masked cells
         rows, cols = np.where(valid_mask)
