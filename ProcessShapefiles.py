@@ -4,14 +4,15 @@ Created on Mon Feb  21 09:00:00 2024
 
 @author: Gregory A. Greene
 """
-import fiona
 import numpy as np
 import fiona as fio
 from fiona.crs import CRS
 # from fiona import Feature, Geometry
 from shapely.geometry import mapping, shape, Point
+from shapely.ops import unary_union
 from pyproj import Transformer
 import geopandas as gpd
+import itertools
 from typing import Union
 
 
@@ -74,6 +75,37 @@ def copyShapefile(src: fio.Collection,
                     'geometry': mapping(shape(elem['geometry']))
                 }
             )
+
+    return fio.open(out_path, 'r')
+
+
+def dissolveFeatures(src: fio.Collection,
+                     out_path: str,
+                     dissolve_field: str) -> fio.Collection:
+    """
+    Function returns a GeoDataFrame of the shapefile
+    :param src: fiona collection object
+    :param out_path: path to new output shapefile
+    :param dissolve_field: name of the field/column to dissolve
+    :return: dissolved fiona collection object in read mode
+    """
+    # Get the schema of the original shapefile, including the crs
+    meta = src.meta
+    with fio.open(out_path, 'w', **meta) as dst:
+        # Group consecutive elements within the dissolve_field that have the same key
+        element_groups = sorted(src, key=lambda k: k['properties'][dissolve_field])
+
+        # Dissolve the features by group
+        for key, group in itertools.groupby(element_groups,
+                                            key=lambda x: x['properties'][dissolve_field]):
+            properties, geom = zip(*[(feature['properties'],
+                                      shape(feature['geometry'])) for feature in group])
+
+            # Write the dissolved feature
+            # Compute the unary_union of the elements in the group
+            # using the properties of the first element in the group
+            dst.write({'geometry': mapping(unary_union(geom)),
+                       'properties': properties[0]})
 
     return fio.open(out_path, 'r')
 
