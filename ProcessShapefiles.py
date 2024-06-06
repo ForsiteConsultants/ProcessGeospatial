@@ -6,6 +6,8 @@ Created on Mon Feb  21 09:00:00 2024
 """
 import numpy as np
 import fiona as fio
+import rasterio as rio
+from rasterio import features
 from fiona.crs import CRS
 # from fiona import Feature, Geometry
 from shapely.geometry import mapping, shape, Point
@@ -108,6 +110,45 @@ def dissolveFeatures(src: fio.Collection,
                        'properties': properties[0]})
 
     return fio.open(out_path, 'r')
+
+
+def featureToRaster(feature_path: str,
+                    out_path: str,
+                    ref_ras_src: rio.DatasetReader,
+                    value_field: str) -> None:
+    """
+    Function creates a raster from a shapefile
+    :param feature_path: path to feature dataset
+    :param out_path: path to output raster
+    :param ref_ras_src: rasterio DatasetReader object to use as reference
+    :param value_field: name of the field/column to use for the raster values
+    :return: None
+    """
+    # Get GeoPandas object of the feature dataset
+    src = gpd.read_file(feature_path)
+
+    # Get the schema of the reference raster, including the crs
+    meta = ref_ras_src.meta.copy()
+    meta.update(compress='lzw')
+
+    with rio.open(out_path, 'w+', **meta) as dst:
+        # Get the raster array
+        dst_arr = dst.read(1)
+
+        # Create a generator of geom, value pairs to use while rasterizing
+        shapes = ((geom, value) for geom, value in zip(src['geometry'],
+                                                       src[value_field]))
+
+        # Replace the raster array with new data
+        burned = features.rasterize(shapes=shapes,
+                                    fill=0,
+                                    out=dst_arr,
+                                    transform=dst.transform)
+
+        # Write the new data to band 1
+        dst.write_band(1, burned)
+
+    return
 
 
 def getShapeGDF(in_path: str) -> gpd.GeoDataFrame:
