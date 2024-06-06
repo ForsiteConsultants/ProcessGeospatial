@@ -60,10 +60,10 @@ def addField(src: fio.Collection,
 def copyShapefile(src: fio.Collection,
                   out_path: str) -> fio.Collection:
     """
-    Function to add a field to an existing shapefile
+    Function to copy a shapefile to a new location
     :param src: fiona collection object
     :param out_path: path to new output shapefile
-    :return: updated fiona collection object in read mode
+    :return: new fiona collection object in read mode
     """
     src_schema = src.schema.copy()
 
