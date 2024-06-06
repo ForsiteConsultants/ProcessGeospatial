@@ -449,6 +449,52 @@ def getAspect(src: rio.DatasetReader,
     return rio.open(out_file, 'r+')
 
 
+def getFirstLast(in_rasters: list[rio.DatasetReader],
+                 out_file: str,
+                 first_last: str,
+                 full_extent: bool = True) -> rio.DatasetReader:
+    """
+    Function creates a new raster using the first valid values of all input rasters
+    :param in_rasters: list of rasterio dataset reader objects
+    :param out_file: the path and name of the output file
+    :param first_last: output the first or last value (Options: "first", "last")
+    :param full_extent: boolean indicating whether to use the (True) full extent of all rasters,
+        or (False) only the overlapping extent
+    :return: rasterio dataset reader object in 'r+' mode
+    """
+    # Verify inputs
+    if not isinstance(in_rasters, list):
+        raise TypeError('[ProcessRasters] getFirstLast() param "in_rasters" must be a list of rasterio objects')
+    if not isinstance(out_file, str):
+        raise TypeError('[ProcessRasters] getFirstLast() param "out_file" must be a string data type')
+    if not isinstance(first_last, str):
+        raise TypeError('[ProcessRasters] getFirstLast() param "first_last" must be a string data type')
+    elif first_last not in ['first', 'last']:
+        raise ValueError('[ProcessRasters] getFirstLast() param "first_last" must be either "first" or "last"')
+    if not isinstance(full_extent, bool):
+        raise TypeError('[ProcessRasters] getFirstLast() param "full_extent" must be a boolean data type')
+
+    # Use the appropriate bounds option based on full_extent parameter
+    bounds = None if full_extent else 'intersection'
+
+    # Merge rasters to get the first valid values
+    mosaic, out_trans = merge(in_rasters, method='first', bounds=bounds)
+
+    # Update the profile with new dimensions and transform
+    profile = in_rasters[0].profile
+    profile.update({
+        'height': mosaic.shape[1],
+        'width': mosaic.shape[2],
+        'transform': out_trans
+    })
+
+    # Create new raster file and write data
+    with rio.open(out_file, 'w', **profile) as dst:
+        dst.write(mosaic)
+
+    return rio.open(out_file, 'r+')
+
+
 def getGridCoordinates(src: rio.DatasetReader,
                        out_file_x: str,
                        out_file_y: str,
@@ -533,50 +579,92 @@ def getHillshade(src: rio.DatasetReader,
     return rio.open(out_file, 'r+')
 
 
-def getMax(in_rasters: list[rio.DatasetReader],
-           out_file: str) -> rio.DatasetReader:
+def getMean(in_rasters: list[rio.DatasetReader],
+            out_file: str,
+            full_extent: bool = True) -> rio.DatasetReader:
     """
-    Function creates a new raster from the maximum values of all input rasters
+    Function creates a new raster from the mean values of all input rasters
     :param in_rasters: list of rasterio dataset reader objects
     :param out_file: the path and name of the output file
+    :param full_extent: boolean indicating whether to use (True) the full extent of all rasters,
+        or (False) only the overlapping extent (default = True)
     :return: rasterio dataset reader object in 'r+' mode
     """
+    # Verify inputs
     if not isinstance(in_rasters, list):
-        raise TypeError('[ProcessRasters] getMax() param "inrasters" must be a list of rasterio objects')
+        raise TypeError('[ProcessRasters] getMean() param "inrasters" must be a list of rasterio objects')
+    if not isinstance(out_file, str):
+        raise TypeError('[ProcessRasters] getMean() param "out_file" must be a string data type')
+    if not isinstance(full_extent, bool):
+        raise TypeError('[ProcessRasters] getMean() param "full_extent" must be a boolean data type')
 
+    # Use the appropriate bounds option based on full_extent parameter
+    bounds = None if full_extent else 'intersection'
+
+    # Merge rasters to get the mean values
+    mosaic, out_trans = merge(in_rasters, method='mean', bounds=bounds)
+
+    # Update the profile with new dimensions and transform
     profile = in_rasters[0].profile
-    array_list = [ras.read() for ras in in_rasters]
+    profile.update({
+        'height': mosaic.shape[1],
+        'width': mosaic.shape[2],
+        'transform': out_trans
+    })
 
-    max_array = np.maximum.reduce(array_list)
-
-    # Create new raster file
+    # Create new raster file and write data
     with rio.open(out_file, 'w', **profile) as dst:
-        # Write data to new raster
-        dst.write(max_array)
+        dst.write(mosaic)
 
     return rio.open(out_file, 'r+')
 
 
-def getMin(in_rasters: list[rio.DatasetReader],
-           out_file: str) -> rio.DatasetReader:
+def getMinMax(in_rasters: list[rio.DatasetReader],
+              out_file: str,
+              min_max: str,
+              full_extent: bool = True) -> rio.DatasetReader:
     """
-    Function creates a new raster from the minimum values of all input rasters
+    Function creates a new raster from the minimum or maximum values of all input rasters
     :param in_rasters: list of rasterio dataset reader objects
     :param out_file: the path and name of the output file
+    :param min_max: output the minimum or maximum value (Options: "min", "max")
+    :param full_extent: boolean indicating whether to use (True) the full extent of all rasters,
+        or (False) only the overlapping extent (default = True)
     :return: rasterio dataset reader object in 'r+' mode
     """
+    # Verify inputs
     if not isinstance(in_rasters, list):
-        raise TypeError('[ProcessRasters] getMax() param "inrasters" must be a list of rasterio objects')
+        raise TypeError('[ProcessRasters] getMinMax() param "inrasters" must be a list of rasterio objects')
+    if not isinstance(out_file, str):
+        raise TypeError('[ProcessRasters] getMinMax() param "out_file" must be a string data type')
+    if not isinstance(min_max, str):
+        raise TypeError('[ProcessRasters] getMinMax() param "min_max" must be a string data type')
+    elif min_max not in ['min', 'max']:
+        raise ValueError('[ProcessRasters] getMinMax() param "min_max" must be either "min" or "max"')
+    if not isinstance(full_extent, bool):
+        raise TypeError('[ProcessRasters] getMinMax() param "full_extent" must be a boolean data type')
 
+    # Use the appropriate bounds option based on full_extent parameter
+    bounds = None if full_extent else 'intersection'
+
+    if 'min' in min_max:
+        # Merge rasters to get the minimum values
+        mosaic, out_trans = merge(in_rasters, method='min', bounds=bounds)
+    else:
+        # Merge rasters to get the maximum values
+        mosaic, out_trans = merge(in_rasters, method='max', bounds=bounds)
+
+    # Update the profile with new dimensions and transform
     profile = in_rasters[0].profile
-    array_list = [ras.read() for ras in in_rasters]
+    profile.update({
+        'height': mosaic.shape[1],
+        'width': mosaic.shape[2],
+        'transform': out_trans
+    })
 
-    max_array = np.minimum.reduce(array_list)
-
-    # Create new raster file
+    # Create new raster file and write data
     with rio.open(out_file, 'w', **profile) as dst:
-        # Write data to new raster
-        dst.write(max_array)
+        dst.write(mosaic)
 
     return rio.open(out_file, 'r+')
 
@@ -662,18 +750,19 @@ def Integer(src: rio.DatasetReader,
     return rio.open(src_path, 'r+')
 
 
-def mosaicRasters(path_list: list[str],
+def mosaicRasters(mosaic_list: list[str, rio.DatasetReader],
                   out_file: str) -> rio.DatasetReader:
     """
-    Function mosaics a list of rasterio objects to a new raster
-    :param path_list: list of paths to raster datasets
+    Function mosaics a list of rasterio objects to a new TIFF raster
+    :param mosaic_list: list of rasterio Dataset objects, or paths to raster datasets
     :param out_file: location and name to save output raster
     :return: rasterio dataset reader object in 'r+' mode
     """
-    mosaic_list = []
-
-    for path in path_list:
-        mosaic_list.extend([rio.open(path)])
+    for data in mosaic_list:
+        if isinstance(data, str):
+            mosaic_list.extend([rio.open(data)])
+        else:
+            break
 
     mosaic, output = merge(mosaic_list)
 
