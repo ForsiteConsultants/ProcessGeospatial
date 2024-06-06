@@ -16,7 +16,6 @@ from geopandas import GeoDataFrame
 import rasterio as rio
 import rasterio.mask
 # from rasterio import CRS
-from rasterio import shutil
 from rasterio.features import shapes, geometry_window
 from rasterio.merge import merge
 from rasterio.transform import xy
@@ -28,6 +27,10 @@ from rasterio.warp import calculate_default_transform, reproject, Resampling
 from shapely.geometry import Point, box, shape, mapping
 from shapely.affinity import translate
 from joblib import Parallel, delayed
+try:
+    from rasterio import shutil
+except ImportError:
+    import shutil
 
 
 def _process_block(block: np.ndarray,
