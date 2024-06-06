@@ -87,13 +87,15 @@ def getShapeGDF(in_path: str) -> gpd.GeoDataFrame:
     return gpd.read_file(in_path)
 
 
-def getShapefile(in_path: str) -> fio.Collection:
+def getShapefile(in_path: str,
+                 mode: str = 'r') -> fio.Collection:
     """
     Function returns a fiona collection object representing the shapefile
     :param in_path: path to shapefile
-    :return: fiona collection object in read+ mode
+    :param mode: mode to open the shapefile with ('r', 'a', 'w'; default = 'r')
+    :return: fiona collection object in read mode
     """
-    return fio.open(in_path, 'r')
+    return fio.open(in_path, mode=mode)
 
 
 def projectGDF(gdf: gpd.GeoDataFrame,

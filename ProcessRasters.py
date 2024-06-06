@@ -61,7 +61,7 @@ def arrayToRaster(array: np.ndarray,
     :param ras_profile: profile of reference rasterio dataset reader object
     :param nodata_val: value to assign as "no data"
     :param data_type: data type of new raster (int or float)
-    :return: rasterio dataset reader object
+    :return: rasterio dataset reader object in r+ mode
     """
     # Get profile
     profile = ras_profile
