@@ -4,18 +4,19 @@ Created on Mon Feb  21 09:00:00 2024
 
 @author: Gregory A. Greene
 """
+import os
 import numpy as np
 import fiona as fio
-import rasterio as rio
-from rasterio import features
 from fiona.crs import CRS
 # from fiona import Feature, Geometry
 from shapely.geometry import mapping, shape, Point
 from shapely.ops import unary_union
 from pyproj import Transformer
 import geopandas as gpd
+import pandas as pd
+from pandas.api.types import infer_dtype
 import itertools
-from typing import Union
+from typing import Union, Optional
 
 
 def addField(src: fio.Collection,
@@ -112,43 +113,100 @@ def dissolveFeatures(src: fio.Collection,
     return fio.open(out_path, 'r')
 
 
-def featureToRaster(feature_path: str,
-                    out_path: str,
-                    ref_ras_src: rio.DatasetReader,
-                    value_field: str) -> None:
+def featureClassToDataframe(gdb_path: str,
+                            feature_class: str,
+                            keep_fields: Optional[list] = None) -> pd.DataFrame:
     """
-    Function creates a raster from a shapefile
-    :param feature_path: path to feature dataset
-    :param out_path: path to output raster
-    :param ref_ras_src: rasterio DatasetReader object to use as reference
-    :param value_field: name of the field/column to use for the raster values
-    :return: None
+    Function to convert an ESRI feature class (in a file GDB) to a Pandas Dataframe
+    :param gdb_path: path to the ESRI File GeoDatabase
+    :param feature_class: name of the feature class
+    :param keep_fields: list of fields to keep in the output shapefile
+    :return: Pandas DataFrame containing the attribute data of the feature class
     """
-    # Get GeoPandas object of the feature dataset
-    src = gpd.read_file(feature_path)
+    from osgeo import ogr
+    # Open the geodatabase
+    driver = ogr.GetDriverByName('OpenFileGDB')
+    gdb = driver.Open(gdb_path, 0)  # 0 means read-only
+    if not gdb:
+        raise Exception('Could not open geodatabase')
 
-    # Get the schema of the reference raster, including the crs
-    meta = ref_ras_src.meta.copy()
-    meta.update(compress='lzw')
+    # Get the layer
+    layer = gdb.GetLayerByName(feature_class)
+    if not layer:
+        raise Exception('Could not find layer')
 
-    with rio.open(out_path, 'w+', **meta) as dst:
-        # Get the raster array
-        dst_arr = dst.read(1)
+    # Extract field names
+    field_names = [layer.GetLayerDefn().GetFieldDefn(i).GetName()
+                   for i in range(layer.GetLayerDefn().GetFieldCount())]
+    if keep_fields is not None:
+        field_names = [field for field in field_names if field in keep_fields]
 
-        # Create a generator of geom, value pairs to use while rasterizing
-        shapes = ((geom, value) for geom, value in zip(src['geometry'],
-                                                       src[value_field]))
+    # Extract features
+    features = []
+    for feature in layer:
+        attrs = [feature.GetField(i) for i in range(feature.GetFieldCount())]
+        features.append(attrs)
 
-        # Replace the raster array with new data
-        burned = features.rasterize(shapes=shapes,
-                                    fill=0,
-                                    out=dst_arr,
-                                    transform=dst.transform)
+    # Convert to DataFrame
+    df = pd.DataFrame(features, columns=field_names)
 
-        # Write the new data to band 1
-        dst.write_band(1, burned)
+    # Close the data source
+    gdb = None
 
-    return
+    return df
+
+
+def featureClassToShapefile(gdb_path: str,
+                            feature_class: str,
+                            shapefile_path: str,
+                            keep_fields: Optional[list] = None) -> fio.Collection:
+    """
+    Function to convert an ESRI feature class (in a file GDB) to a shapefile
+    :param gdb_path: path to the ESRI File GeoDatabase
+    :param feature_class: name of the feature class
+    :param shapefile_path: fiona collection object in read mode
+    :param keep_fields: list of fields to keep in the output shapefile
+    :return:
+    """
+    from osgeo import ogr
+    # Open the source geodatabase
+    gdb = ogr.Open(gdb_path)
+    if not gdb:
+        raise FileNotFoundError(f"Could not open geodatabase: {gdb_path}")
+
+    layer = gdb.GetLayer(feature_class)
+    if not layer:
+        raise ValueError(f"Feature class '{feature_class}' not found in geodatabase.")
+
+    # Create a new shapefile
+    driver = ogr.GetDriverByName('ESRI Shapefile')
+    if os.path.exists(shapefile_path):
+        driver.DeleteDataSource(shapefile_path)
+    shapefile = driver.CreateDataSource(shapefile_path)
+    new_layer = shapefile.CreateLayer(feature_class, geom_type=layer.GetGeomType())
+
+    # Create fields to keep in the new shapefile
+    layer_defn = layer.GetLayerDefn()
+    for i in range(layer_defn.GetFieldCount()):
+        field_defn = layer_defn.GetFieldDefn(i)
+        if (keep_fields is not None) and (field_defn.GetName() in keep_fields):
+            new_layer.CreateField(field_defn)
+
+    # Iterate through the source features and copy geometries and specified fields
+    for feature in layer:
+        new_feature = ogr.Feature(new_layer.GetLayerDefn())
+        new_feature.SetGeometry(feature.GetGeometryRef().Clone())
+        for field in keep_fields:
+            new_feature.SetField(field, feature.GetField(field))
+        new_layer.CreateFeature(new_feature)
+        new_feature = None
+
+    # Cleanup
+    layer = None
+    gdb = None
+    shapefile = None
+
+    return fio.open(shapefile_path, mode='r')
 
 
 def getShapeGDF(in_path: str) -> gpd.GeoDataFrame:
@@ -169,6 +227,66 @@ def getShapefile(in_path: str,
     :return: fiona collection object in read mode
     """
     return fio.open(in_path, mode=mode)
+
+
+def joinTable(src: fio.Collection,
+              table_path: str,
+              out_path: str,
+              key_field: str) -> fio.Collection:
+    """
+    Function to join a CSV or Excel table to a shapefile
+    :param src: fiona collection object
+    :param table_path: path to the join table
+    :param out_path: output path to new shapefile
+    :param key_field: common field between the shapefile and table to use for joining
+    :return: fiona collection object in read mode
+    """
+    def _fiona_dtype(dtype):
+        """Map pandas dtype to Fiona field type."""
+        if dtype.startswith('int'):
+            return 'int'
+        elif dtype.startswith('float'):
+            return 'float'
+        elif dtype == 'bool':
+            return 'bool'
+        elif dtype.startswith('datetime'):
+            return 'date'
+        else:
+            return 'str'
+
+    # Read the table (CSV or Excel) into a DataFrame
+    if table_path.endswith('.csv'):
+        df = pd.read_csv(table_path)
+    elif table_path.endswith('.xls') or table_path.endswith('.xlsx'):
+        df = pd.read_excel(table_path)
+    else:
+        raise ValueError("Unsupported file format. Please provide a CSV or Excel file.")
+
+    # Convert the DataFrame to a dictionary for easy lookup
+    table_data = df.set_index(key_field).to_dict(orient='index')
+
+    # Get the fiona collection metadata
+    meta = src.meta
+
+    # Update the schema with new fields from the table and infer data types
+    for field_name in df.columns:
+        if field_name != key_field and field_name not in meta['schema']['properties']:
+            pandas_dtype = infer_dtype(df[field_name])
+            fiona_dtype = _fiona_dtype(pandas_dtype)
+            meta['schema']['properties'][field_name] = fiona_dtype
+
+    # Create a new shapefile with updated schema
+    with fio.open(out_path, 'w', **meta) as dst:
+        for feature in src:
+            feature_id = feature['properties'][key_field]
+            if feature_id in table_data:
+                # Update feature properties with table data
+                for key, value in table_data[feature_id].items():
+                    if key != key_field:
+                        feature['properties'][key] = value
+            dst.write(feature)
+
+    return fio.open(out_path, 'r')
 
 
 def projectGDF(gdf: gpd.GeoDataFrame,
