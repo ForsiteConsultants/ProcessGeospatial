@@ -27,6 +27,7 @@ from rasterio.warp import calculate_default_transform, reproject, Resampling
 from shapely.geometry import Point, box, shape, mapping
 from shapely.affinity import translate
 from joblib import Parallel, delayed
+
 try:
     from rasterio import shutil
 except ImportError:
@@ -76,11 +77,11 @@ def arrayToRaster(array: np.ndarray,
     )
     if nodata_val:
         profile.update(
-            nodata=nodata_val   # Specify nodata value
+            nodata=nodata_val  # Specify nodata value
         )
     if data_type:
         profile.update(
-            dtype=data_type   # Specify nodata value
+            dtype=data_type  # Specify nodata value
         )
 
     # Create new raster file
@@ -95,8 +96,8 @@ def arrayToRaster(array: np.ndarray,
 
 
 def asciiToTiff(ascii_path: str,
-               out_file: str,
-               out_crs: str = 'EPSG:4326') -> rio.DatasetReader:
+                out_file: str,
+                out_crs: str = 'EPSG:4326') -> rio.DatasetReader:
     """
     Function to convert a TIFF to an ASCII file
     :param ascii_path:  path to ASCII dataset
@@ -274,7 +275,7 @@ def clipRaster_wShape(src: rio.DatasetReader,
             'height': out_image.shape[1],
             'width': out_image.shape[2],
             'transform': out_transform
-         }
+        }
     )
 
     with rasterio.open(out_file, 'w', **out_meta) as dst:
@@ -475,6 +476,7 @@ def featureToRaster(feature_path: str,
     :param value_field: name of the field/column to use for the raster values
     :return: rasterio dataset reader object in 'r+' mode
     """
+
     def _infer_raster_dtype(dtype):
         """Map pandas dtype to rasterio dtype."""
         if dtype.startswith('int'):
@@ -888,7 +890,7 @@ def mosaicRasters(mosaic_list: list[str, rio.DatasetReader],
             'height': mosaic.shape[1],
             'width': mosaic.shape[2],
             'transform': output
-         }
+        }
     )
 
     with rio.open(out_file, 'w', **out_meta) as dst:
@@ -1120,10 +1122,10 @@ def sumRasters(src: rio.DatasetReader,
 
     profile = src.profile
     profile.update(
-        compress='lzw'      # Specify LZW compression
+        compress='lzw'  # Specify LZW compression
     )
-    src_path = src.name     # Get path of input source dataset
-    src.close()             # Close input source dataset
+    src_path = src.name  # Get path of input source dataset
+    src.close()  # Close input source dataset
 
     # Write new data to src_path (replace original data with new data)
     with rio.open(src_path, 'w', **profile) as dst:
@@ -1218,15 +1220,15 @@ def updateRaster(src: rio.DatasetReader,
     # Update profile
     if nodata_val:
         profile.update(
-            compress='lzw',     # Specify LZW compression
-            nodata=nodata_val   # Specify nodata value
+            compress='lzw',  # Specify LZW compression
+            nodata=nodata_val  # Specify nodata value
         )
     else:
         profile.update(
-            compress='lzw'      # Specify LZW compression
+            compress='lzw'  # Specify LZW compression
         )
-    src_path = src.name     # Get path of input source dataset
-    src.close()             # Close input source dataset
+    src_path = src.name  # Get path of input source dataset
+    src.close()  # Close input source dataset
 
     # Write new data to source out_path (replace original data)
     with rio.open(src_path, 'r+', **profile) as dst:
@@ -1240,7 +1242,6 @@ def updateRaster(src: rio.DatasetReader,
 
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(src_path, 'r+')
-
 
 # STILL WORKING ON THIS FUNCTION
 # def updateLargeRas_wSmallRas(src_lrg, src_small, nodata_val=None):
