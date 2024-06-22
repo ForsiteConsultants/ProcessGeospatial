@@ -209,6 +209,36 @@ def featureClassToShapefile(gdb_path: str,
     return fio.open(shapefile_path, mode='r')
 
 
+def getCoordinates(src: fio.Collection) -> list:
+    """
+    Function to add a field to an existing shapefile
+    :param src: fiona collection object
+    :return: list of coordinate pairs for each point or vertex in a shapefile
+    """
+    # List to hold all coordinates
+    coordinates = []
+
+    # Iterate over each feature in the shapefile
+    for feature in src:
+        # Extract the geometry
+        geom = feature['geometry']
+
+        # Depending on the geometry type, extract coordinates
+        if geom['type'] == 'Point':
+            coordinates.append(geom['coordinates'])
+        elif geom['type'] in ['LineString', 'MultiPoint']:
+            coordinates.extend(geom['coordinates'])
+        elif geom['type'] in ['Polygon', 'MultiLineString']:
+            for part in geom['coordinates']:
+                coordinates.extend(part)
+        elif geom['type'] == 'MultiPolygon':
+            for polygon in geom['coordinates']:
+                for part in polygon:
+                    coordinates.extend(part)
+
+    return coordinates
+
+
 def getShapeGDF(in_path: str) -> gpd.GeoDataFrame:
     """
     Function returns a GeoDataFrame of the shapefile
