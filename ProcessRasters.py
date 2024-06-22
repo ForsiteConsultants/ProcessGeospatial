@@ -18,7 +18,7 @@ import rasterio.mask
 # from rasterio import CRS
 from rasterio.features import shapes, geometry_window, geometry_mask, rasterize
 from rasterio.merge import merge
-from rasterio.transform import xy
+from rasterio.transform import xy, from_origin
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 # from rasterio.windows import Window
 # from rasterio.windows import Window
@@ -91,6 +91,57 @@ def arrayToRaster(array: np.ndarray,
         calculateStatistics(dst)
 
     # Return new raster as "readonly" rasterio openfile object
+    return rio.open(out_file, 'r+')
+
+
+def asciiToTiff(ascii_path: str,
+               out_file: str,
+               out_crs: str = 'EPSG:4326') -> rio.DatasetReader:
+    """
+    Function to convert a TIFF to an ASCII file
+    :param ascii_path:  path to ASCII dataset
+    :param out_file: path (with name) to save TIF file
+    :param out_crs: string defining new projection (e.g., 'EPSG:4326')
+    :return: new rasterio dataset reader object in 'r+' mode
+    """
+    # Read the ASCII file
+    with open(ascii_path, 'r') as f:
+        # Skip header lines and get metadata
+        header = {}
+        for _ in range(6):
+            key, value = f.readline().strip().split()
+            header[key] = float(value)
+
+        # Read the raster data
+        data = np.loadtxt(f)
+
+    # Extract metadata
+    ncols = int(header['ncols'])
+    nrows = int(header['nrows'])
+    xllcorner = header['xllcorner']
+    yllcorner = header['yllcorner']
+    cellsize = header['cellsize']
+    nodata_value = header['NODATA_value']
+
+    # Define the transformation
+    # Adjust the yllcorner to the top left y coordinate
+    yllcorner_top = yllcorner + nrows * cellsize
+    transform = from_origin(xllcorner, yllcorner_top, cellsize, cellsize)
+
+    # Write the data to a GeoTIFF file
+    with rasterio.open(out_file,
+                       mode='w',
+                       driver='GTiff',
+                       height=nrows,
+                       width=ncols,
+                       count=1,
+                       dtype=data.dtype,
+                       crs=out_crs,
+                       transform=transform,
+                       nodata=nodata_value
+                       ) as dst:
+        dst.write(data, 1)
+
     return rio.open(out_file, 'r+')
 
 
@@ -1049,7 +1100,6 @@ def resampleRaster(src: rio.DatasetReader,
         dst.write(out_array, 1)
 
     return rio.open(out_file, 'r+')
-
 
 
 def sumRasters(src: rio.DatasetReader,
