@@ -601,7 +601,7 @@ def getFirstLast(in_rasters: list[rio.DatasetReader],
                  first_last: str,
                  full_extent: bool = True) -> rio.DatasetReader:
     """
-    Function creates a new raster using the first valid values of all input rasters
+    Function creates a new raster using the first valid values per cell across all input rasters
     :param in_rasters: list of rasterio dataset reader objects
     :param out_file: the path and name of the output file
     :param first_last: output the first or last value (Options: "first", "last")
@@ -730,7 +730,7 @@ def getMean(in_rasters: list[rio.DatasetReader],
             out_file: str,
             full_extent: bool = True) -> rio.DatasetReader:
     """
-    Function creates a new raster from the mean values of all input rasters
+    Function creates a new raster from the mean value per cell across all input rasters
     :param in_rasters: list of rasterio dataset reader objects
     :param out_file: the path and name of the output file
     :param full_extent: boolean indicating whether to use (True) the full extent of all rasters,
@@ -771,7 +771,7 @@ def getMinMax(in_rasters: list[rio.DatasetReader],
               min_max: str,
               full_extent: bool = True) -> rio.DatasetReader:
     """
-    Function creates a new raster from the minimum or maximum values of all input rasters
+    Function creates a new raster from the minimum or maximum values per cell across all input rasters
     :param in_rasters: list of rasterio dataset reader objects
     :param out_file: the path and name of the output file
     :param min_max: output the minimum or maximum value (Options: "min", "max")
