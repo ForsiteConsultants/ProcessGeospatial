@@ -14,7 +14,7 @@ from osgeo import gdal
 import geopandas as gpd
 from geopandas import GeoDataFrame
 import rasterio as rio
-import rasterio.mask
+from rasterio.mask import mask
 # from rasterio import CRS
 from rasterio.features import shapes, geometry_window, geometry_mask, rasterize
 from rasterio.merge import merge
@@ -130,17 +130,17 @@ def asciiToTiff(ascii_path: str,
     transform = from_origin(xllcorner, yllcorner_top, cellsize, cellsize)
 
     # Write the data to a GeoTIFF file
-    with rasterio.open(out_file,
-                       mode='w',
-                       driver='GTiff',
-                       height=nrows,
-                       width=ncols,
-                       count=1,
-                       dtype=data.dtype,
-                       crs=out_crs,
-                       transform=transform,
-                       nodata=nodata_value
-                       ) as dst:
+    with rio.open(out_file,
+                  mode='w',
+                  driver='GTiff',
+                  height=nrows,
+                  width=ncols,
+                  count=1,
+                  dtype=data.dtype,
+                  crs=out_crs,
+                  transform=transform,
+                  nodata=nodata_value
+                  ) as dst:
         dst.write(data, 1)
 
     return rio.open(out_file, 'r+')
@@ -224,7 +224,7 @@ def clipRaster_wRas(src: rio.DatasetReader,
     """
     geometry = [box(*mask_src.bounds)]
 
-    out_array, out_transform = rio.mask.mask(src, geometry, all_touched=all_touched, crop=crop)
+    out_array, out_transform = mask(src, geometry, all_touched=all_touched, crop=crop)
     out_profile = src.profile
     src.close()
 
@@ -247,6 +247,8 @@ def clipRaster_wRas(src: rio.DatasetReader,
 def clipRaster_wShape(src: rio.DatasetReader,
                       shape_path: str,
                       out_file: str,
+                      select_field: Optional[str] = None,
+                      select_value: Optional[Union[any, list[any]]] = None,
                       all_touched: Optional[bool] = True,
                       crop: Optional[bool] = True) -> rio.DatasetReader:
     """
@@ -254,31 +256,60 @@ def clipRaster_wShape(src: rio.DatasetReader,
     :param src: input rasterio dataset reader object
     :param shape_path: file path to clip shapefile
     :param out_file: location and name to save output raster
+    :param select_field: name of field to use to select specific features for clipping
+    :param select_value: value(s) in select_field to use for the feature selection
     :param all_touched: include all cells that touch the shapefile boundary (in addition to inside the boundary)
          (default = True)
     :param crop: crop output extent to match the extent of the data (default = True)
     :return: rasterio dataset reader object in 'r+' mode
     """
+    # Verify select_field and select_value parameters
+    if select_field is not None:
+        if not isinstance(select_field, str):
+            raise ValueError('Parameter "select_field" must be str type')
+        if select_value is None:
+            raise ValueError('Parameter "select_value" requires a value when selecting features')
+
     src_path = src.name
     src.close()
 
-    # Get geometry of shapefile
+    # Get the shapefile geometries
     with fiona.open(shape_path, 'r') as shapefile:
-        shapes = [feature['geometry'] for feature in shapefile]
+        if select_field is not None:
+            if isinstance(select_value, list):
+                filtered_features = [
+                    feature for feature in shapefile
+                    if feature['properties'][select_field] in select_value
+                ]
+            else:
+                filtered_features = [
+                    feature for feature in shapefile
+                    if feature['properties'][select_field] == select_value
+                ]
+            geometries = [feature['geometry'] for feature in filtered_features]
 
-    with rasterio.open(src_path) as new_src:
-        out_image, out_transform = rasterio.mask.mask(new_src, shapes, all_touched=all_touched, crop=crop)
-        out_meta = new_src.meta
+            # Check if any features were found
+            if not geometries:
+                raise RuntimeWarning(f'No features found with {select_field} = {select_value}')
+        else:
+            geometries = [feature['geometry'] for feature in shapefile]
 
-    out_meta.update(
-        {
-            'height': out_image.shape[1],
-            'width': out_image.shape[2],
-            'transform': out_transform
-        }
-    )
+    # Open the raster file
+    with rio.open(src_path) as new_src:
+        # Clip the raster using the geometries
+        out_image, out_transform = mask(new_src, geometries, all_touched=all_touched, crop=crop)
+        out_meta = new_src.meta.copy()
 
-    with rasterio.open(out_file, 'w', **out_meta) as dst:
+        # Update the metadata with the new dimensions, transform, and CRS
+        out_meta.update(
+            {
+                'height': out_image.shape[1],
+                'width': out_image.shape[2],
+                'transform': out_transform
+            }
+        )
+
+    with rio.open(out_file, 'w', **out_meta) as dst:
         dst.write(out_image)
         # Calculate new statistics
         calculateStatistics(dst)
@@ -1040,7 +1071,7 @@ def reprojRaster(src: rio.DatasetReader,
         for i in range(1, src.count + 1):
             reproject(
                 source=rio.band(src, i),
-                destination=rasterio.band(dst, i),
+                destination=rio.band(dst, i),
                 src_transform=src.transform,
                 src_crs=src.crs,
                 dst_transform=transform,
@@ -1098,7 +1129,7 @@ def resampleRaster(src: rio.DatasetReader,
     })
 
     # Write the resampled data to a new raster file
-    with rasterio.open(out_file, 'w', **out_meta) as dst:
+    with rio.open(out_file, 'w', **out_meta) as dst:
         dst.write(out_array, 1)
 
     return rio.open(out_file, 'r+')
