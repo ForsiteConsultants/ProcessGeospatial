@@ -5,6 +5,8 @@ Created on Mon Feb  21 09:00:00 2024
 @author: Gregory A. Greene
 """
 import os
+
+import numpy
 import numpy as np
 import fiona as fio
 from fiona.crs import CRS
@@ -378,3 +380,40 @@ def saveShapeGDF(gdf: gpd.GeoDataFrame,
     """
     gdf.to_file(out_file)
     return gpd.read_file(out_file)
+
+
+def shapefileToNumpyArray(in_path: str,
+                          out_type: str) -> numpy.ndarray:
+    """
+    Function to convert a shapefile to a NumPy array
+    :param in_path: path to the shapefile
+    :param out_type: type of output to produce (options: geometries, attributes, both)
+    :return: NumPy array containing the geometries and attribute data from the shapefile
+    """
+    geometries = []
+    attributes = []
+
+    # Open the shapefile using fiona
+    with fio.open(in_path, 'r') as shapefile:
+        for feature in shapefile:
+            # Extract the geometry (as a list of coordinates)
+            geometry = feature['geometry']['coordinates']
+            geometries.append(geometry)
+
+            # Extract the attribute data (as a dictionary)
+            attribute = feature['properties']
+            attributes.append(attribute)
+
+    # Convert geometries and attributes to NumPy arrays
+    geometries_array = np.array(geometries, dtype=object)
+    attributes_array = np.array(attributes, dtype=object)
+
+    if out_type == 'geometries':
+        # Return an array of the geometries
+        return geometries_array
+    elif out_type == 'attributes':
+        # Return an array of the attributes
+        return attributes_array
+    else:
+        # Combine geometries and attributes into a single NumPy array
+        return np.array(list(zip(geometries_array, attributes_array)), dtype=object)
