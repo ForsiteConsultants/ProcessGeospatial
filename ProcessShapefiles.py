@@ -383,13 +383,20 @@ def saveShapeGDF(gdf: gpd.GeoDataFrame,
 
 
 def shapefileToNumpyArray(in_path: str,
-                          out_type: str) -> numpy.ndarray:
+                          out_type: Optional[str] = None,
+                          fields: Optional[list[str]] = None) -> numpy.ndarray:
     """
     Function to convert a shapefile to a NumPy array
     :param in_path: path to the shapefile
-    :param out_type: type of output to produce (options: geometries, attributes, both)
+    :param out_type: type of output to return (options: geometries, attributes, None).
+        If None, both geometries and attributes will be returned.
+    :param fields: list of fields to return from the attribute table.
+        If None, all fields are returned.
     :return: NumPy array containing the geometries and attribute data from the shapefile
     """
+    if out_type == 'geometries':
+        fields = None
+
     geometries = []
     attributes = []
 
@@ -400,8 +407,11 @@ def shapefileToNumpyArray(in_path: str,
             geometry = feature['geometry']['coordinates']
             geometries.append(geometry)
 
-            # Extract the attribute data (as a dictionary)
-            attribute = feature['properties']
+            # Extract the selected attribute data
+            if fields:
+                attribute = {field: feature['properties'][field] for field in fields}
+            else:
+                attribute = feature['properties']
             attributes.append(attribute)
 
     # Convert geometries and attributes to NumPy arrays

@@ -1001,11 +1001,11 @@ def rasterToPoly(src: rio.DatasetReader,
     """
     if not multiprocess:
         # Create shape generator
-        print('[rasterToPoly - Creating shape generator]')
+        # print('[rasterToPoly - Creating shape generator]')
         shape_gen = ((shape(s), v) for s, v in shapes(src.read(masked=True), transform=src.transform))
 
         # Build a GeoDataFrame from unpacked shapes
-        print('[rasterToPoly - Building GeoDataFrame]')
+        # print('[rasterToPoly - Building GeoDataFrame]')
         gdf = GeoDataFrame(dict(zip(['geometry', f'{shp_value_field}'], zip(*shape_gen))), crs=src.crs)
     else:
         # ### Code for multiprocessing
@@ -1013,7 +1013,7 @@ def rasterToPoly(src: rio.DatasetReader,
         height, width = src.height, src.width
 
         # Function to generate blocks
-        print('[rasterToPoly - Generating data blocks from raster]')
+        # print('[rasterToPoly - Generating data blocks from raster]')
 
         def gen_blocks():
             for i in range(0, height, block_size):
@@ -1022,23 +1022,23 @@ def rasterToPoly(src: rio.DatasetReader,
                     yield src.read(masked=True, window=window), src.transform, window
 
         # Set up parallel processing
-        print('[rasterToPoly - Setting up and running parallel processing]')
+        # print('[rasterToPoly - Setting up and running parallel processing]')
         shapes_list = Parallel(n_jobs=num_cores)(
             delayed(_process_block)(*block) for block in gen_blocks()
         )
 
         # Flatten the list of shapes
-        print('[rasterToPoly - Flattening shapes]')
+        # print('[rasterToPoly - Flattening shapes]')
         shapes_flat = [shp for shapes_sublist in shapes_list for shp in shapes_sublist]
 
         # Build a GeoDataFrame from unpacked shapes
-        print('[rasterToPoly - Building GeoDataFrame]')
+        # print('[rasterToPoly - Building GeoDataFrame]')
         gdf = GeoDataFrame({'geometry': [s for s, _ in shapes_flat],
                             f'{shp_value_field}': [v for _, v in shapes_flat]},
                            crs=src.crs)
 
     # Save to shapefile
-    print('[rasterToPoly - Saving shapefile to out_file]')
+    # print('[rasterToPoly - Saving shapefile to out_file]')
     gdf.to_file(out_file)
 
     return
