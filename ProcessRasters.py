@@ -766,13 +766,13 @@ def getMean(in_rasters: list[rio.DatasetReader],
     return rio.open(out_file, 'r+')
 
 
-def getMinMax(in_rasters: list[rio.DatasetReader],
+def getMinMax(in_rasters: Union[list[str], list[rio.DatasetReader]],
               out_file: str,
               min_max: str,
               full_extent: bool = True) -> rio.DatasetReader:
     """
     Function creates a new raster from the minimum or maximum values per cell across all input rasters
-    :param in_rasters: list of rasterio dataset reader objects
+    :param in_rasters: list of file paths or rasterio dataset reader objects
     :param out_file: the path and name of the output file
     :param min_max: output the minimum or maximum value (Options: "min", "max")
     :param full_extent: boolean indicating whether to use (True) the full extent of all rasters,
@@ -781,7 +781,8 @@ def getMinMax(in_rasters: list[rio.DatasetReader],
     """
     # Verify inputs
     if not isinstance(in_rasters, list):
-        raise TypeError('[ProcessRasters] getMinMax() param "inrasters" must be a list of rasterio objects')
+        raise TypeError('[ProcessRasters] getMinMax() param "inrasters" must be '
+                        'a list of file paths or rasterio dataset reader objects')
     if not isinstance(out_file, str):
         raise TypeError('[ProcessRasters] getMinMax() param "out_file" must be a string data type')
     if not isinstance(min_max, str):
@@ -790,6 +791,10 @@ def getMinMax(in_rasters: list[rio.DatasetReader],
         raise ValueError('[ProcessRasters] getMinMax() param "min_max" must be either "min" or "max"')
     if not isinstance(full_extent, bool):
         raise TypeError('[ProcessRasters] getMinMax() param "full_extent" must be a boolean data type')
+
+    # Get list of rasterio dataset reader objects if list of file paths was provided
+    if isinstance(in_rasters[0], str):
+        in_rasters = [getRaster(path) for path in in_rasters]
 
     # Use the appropriate bounds option based on full_extent parameter
     bounds = None if full_extent else 'intersection'
