@@ -10,7 +10,7 @@ import numpy as np
 import fiona
 import pandas as pd
 import pyproj as pp
-from osgeo import gdal
+# from osgeo import gdal
 import geopandas as gpd
 from geopandas import GeoDataFrame
 import rasterio as rio
@@ -871,7 +871,7 @@ def Integer(src: rio.DatasetReader,
     """
     Function to convert a raster to an Integer data type
     :param src: input rasterio dataset reader object
-    :param datatype: numpy dtype; eg., signed (np.int8, np.int32) or unsigned (np.uint8, np.unit32)
+    :param datatype: numpy dtype; e.g., signed (np.int8, np.int32) or unsigned (np.uint8, np.unit32)
     :param nodata_val: integer value to assign as no data
     :return: rasterio dataset reader object in 'r+' mode
     """

@@ -4,8 +4,8 @@ Created on Mon Feb  21 09:00:00 2024
 
 @author: Gregory A. Greene
 """
-import os
 
+import os
 import numpy
 import numpy as np
 import fiona as fio
