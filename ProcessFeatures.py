@@ -9,9 +9,9 @@ import os
 import numpy
 import numpy as np
 import fiona as fio
-from fiona.crs import CRS
+from fiona.crs import CRS, from_epsg
 # from fiona import Feature, Geometry
-from shapely.geometry import mapping, shape, Point
+from shapely.geometry import mapping, shape, Point, box
 from shapely.ops import unary_union
 from pyproj import Transformer
 import geopandas as gpd
@@ -58,6 +58,57 @@ def addField(src: fio.Collection,
                     'geometry': mapping(shape(elem['geometry']))
                 }
             )
+
+    return fio.open(out_path, 'r')
+
+
+def bufferPoints(src: fio.Collection,
+                 buffer_value: Union[int, float],
+                 out_path: str,
+                 use_extent: bool = False,
+                 epsg: Optional[int] = None) -> fio.Collection:
+    """
+    Buffers each point in the input shapefile by the "buffer_value". If "use_extent" is True, a square polygon
+    based on the extent of each buffer will be generated. Outputs results as a new shapefile.
+    :param src: fiona collection object
+    :param buffer_value: buffer value in the same units as the CRS of the input shapefile
+    :param out_path: path to the output shapefile
+    :param use_extent: if True, generate a square polygon based on the extent of each buffer
+    :param epsg: EPSG code for the output CRS (defaults to input shapefile CRS)
+    :return: fiona collection object in read mode
+    """
+    # Use the input shapefile's CRS if not provided
+    crs = src.crs if epsg is None else from_epsg(epsg)
+
+    # Define the schema for the output shapefile (Polygon geometry)
+    schema = {
+        'geometry': 'Polygon',
+        'properties': {key: val for key, val in src.schema['properties'].items()}
+    }
+
+    # Create the output shapefile
+    with fio.open(out_path, 'w', driver='ESRI Shapefile', crs=crs, schema=schema) as output_shp:
+        # Loop through each feature (point) in the input shapefile
+        for feature in src:
+            # Extract the point geometry and properties
+            point_geom = shape(feature['geometry'])  # Convert to shapely geometry
+            properties = feature['properties']  # Get the feature's properties
+
+            # Buffer the point geometry by the buffer_value (creates a circular buffer)
+            buffered_point = point_geom.buffer(buffer_value)
+
+            if use_extent:
+                # Get the bounding box (extent) of the buffered point
+                bounds = buffered_point.bounds  # (minx, miny, maxx, maxy)
+
+                # Create a square polygon from the bounding box
+                buffered_point = box(bounds[0], bounds[1], bounds[2], bounds[3])
+
+            # Write the square polygon to the output shapefile, keeping the original properties
+            output_shp.write({
+                'geometry': mapping(buffered_point),
+                'properties': properties
+            })
 
     return fio.open(out_path, 'r')
 
@@ -209,6 +260,33 @@ def featureClassToShapefile(gdb_path: str,
     shapefile = None
 
     return fio.open(shapefile_path, mode='r')
+
+
+def featureExtentToPoly(gdf: gpd.GeoDataFrame,
+                        buffer_size: float) -> gpd.GeoDataFrame:
+    """
+    Function buffers each polygon in the GeoDataFrame by the buffer_size and returns a new GeoDataFrame
+    with polygons representing the extent (bounding box) of the buffered polygons.
+    :param gdf: the input polygon
+    :param buffer_size: the buffer size to apply around the polygon
+    :return: A GeoDataFrame with polygons based on the extents (bounding boxes) of the buffered polygons.
+    """
+    if not isinstance(gdf, gpd.GeoDataFrame):
+        raise TypeError('The gdf parameter must be a GeoDataFrame data type.')
+
+    # Function to buffer the polygon and get the extent (bounding box)
+    def buffer_and_get_extent(polygon):
+        buffered_polygon = polygon.buffer(buffer_size)
+        minx, miny, maxx, maxy = buffered_polygon.bounds
+        return box(minx, miny, maxx, maxy)
+
+    # Apply the buffer_and_get_extent function to each geometry in the GeoDataFrame
+    gdf['extent'] = gdf['geometry'].apply(buffer_and_get_extent)
+
+    # Create a new GeoDataFrame with the extents as geometry
+    new_gdf = gpd.GeoDataFrame(gdf.drop(columns='geometry'), geometry='extent', crs=gdf.crs)
+
+    return new_gdf
 
 
 def getCoordinates(src: fio.Collection) -> list:

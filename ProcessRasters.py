@@ -10,7 +10,7 @@ import numpy as np
 import fiona
 import pandas as pd
 import pyproj as pp
-# from osgeo import gdal
+from osgeo import gdal
 import geopandas as gpd
 from geopandas import GeoDataFrame
 import rasterio as rio
@@ -18,7 +18,7 @@ from rasterio.mask import mask
 # from rasterio import CRS
 from rasterio.features import shapes, geometry_window, geometry_mask, rasterize
 from rasterio.merge import merge
-from rasterio.transform import xy, from_origin
+from rasterio.transform import xy, from_origin, from_bounds
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 # from rasterio.windows import Window
 # from rasterio.windows import Window
@@ -394,9 +394,10 @@ def extractValuesAtPoints(in_pts: Union[str, GeoDataFrame],
     :param in_pts: path to, or a GeoDataFrame object of, the point shapefile
     :param src: input rasterio dataset reader object
     :param value_field: name of field to contain raster values
-    :param out_type: type of output ("series", "shp", "csv")
+    :param out_type: type of output ("gdf", "series", "shp", "csv")
     :param new_pts_path: path to new point shapefile, if out_type == 'shp' (default = None)
-    :return: a pandas series object, or None (if out_type is "shp" or "csv")
+    :return: a GeoDataFrame object (if out_type is "gdf"),
+        a pandas series object (if out_type is "series"), or None (if out_type is "shp" or "csv")
     """
     # If in_pts is not str or GeoDataFrame type, raise error
     if not isinstance(in_pts, (str, GeoDataFrame)):
@@ -405,12 +406,16 @@ def extractValuesAtPoints(in_pts: Union[str, GeoDataFrame],
     # If in_pts is str type, get GeoDataFrame object from path
     if isinstance(in_pts, str):
         gdf = gpd.read_file(in_pts)
+    elif isinstance(in_pts, GeoDataFrame):
+        gdf = in_pts
 
     # Extract raster values at point locations, and assign to "value_field"
     gdf[f'{value_field}'] = next(src.sample(zip(gdf['geometry'].x, gdf['geometry'].y)))[0]
 
     # Return raster point values
-    if out_type == 'series':
+    if out_type == 'gdf':
+        return gdf
+    elif out_type == 'series':
         return gdf[f'{value_field}']
     elif out_type == 'shp':
         gdf.to_file(new_pts_path)
@@ -867,16 +872,20 @@ def getSlope(src: rio.DatasetReader,
 
 def Integer(src: rio.DatasetReader,
             datatype: np.dtype,
-            nodata_val: int) -> rio.DatasetReader:
+            nodata_val: int,
+            round_values: bool = False) -> rio.DatasetReader:
     """
-    Function to convert a raster to an Integer data type
+    Function to convert a raster to an Integer data type. Updates the source raster file in place.
     :param src: input rasterio dataset reader object
     :param datatype: numpy dtype; e.g., signed (np.int8, np.int32) or unsigned (np.uint8, np.unit32)
     :param nodata_val: integer value to assign as no data
+    :param round_values: round values before converting to Integer
     :return: rasterio dataset reader object in 'r+' mode
     """
     # Convert array values to integer type
     int_array = src.read()
+    if round_values is not None:
+        round_values = np.round(round_values)
     if src.nodata != nodata_val:
         int_array[int_array == src.nodata] = nodata_val
     int_array = np.asarray(int_array, dtype=int)
@@ -894,6 +903,7 @@ def Integer(src: rio.DatasetReader,
         dtype=datatype)
 
     src.close()
+    del src
 
     # Create new raster file
     with rio.open(src_path, 'w', **profile) as dst:
@@ -901,6 +911,85 @@ def Integer(src: rio.DatasetReader,
         dst.write(int_array)
 
     return rio.open(src_path, 'r+')
+
+
+def matchExtents(src: rio.DatasetReader,
+                 ref_src: rio.DatasetReader,
+                 out_file: str,
+                 match_res: bool = False) -> rio.DatasetReader:
+    """
+    Match the extent of the source raster to the target raster.
+    :param src: source rasterio dataset reader object to alter
+    :param ref_src: rasterio dataset reader object to use as reference
+    :param out_file: path to save the output raster with matched extent
+    :param match_res: if True, match the reference resolution,
+        if False, retain the source resolution.
+    :return: rasterio dataset reader object in 'r+' mode
+    """
+    # Calculate transform, width, and height of the new raster based on match_res
+    if match_res:
+        # Match reference resolution
+        transform, width, height = calculate_default_transform(
+            src.crs, ref_src.crs, ref_src.width, ref_src.height, *ref_src.bounds
+        )
+    else:
+        # Retain source resolution
+        transform, width, height = calculate_default_transform(
+            src.crs, ref_src.crs, src.width, src.height, *ref_src.bounds
+        )
+
+    # Update the metadata of the output raster to match the reference
+    dest_meta = src.meta.copy()
+    dest_meta.update({
+        'crs': ref_src.crs,
+        'transform': transform,
+        'width': width,
+        'height': height
+    })
+
+    # Open the output raster for writing
+    with rio.open(out_file, 'w', **dest_meta) as dest:
+        # Reproject the source raster into the target's extent and resolution
+        for i in range(1, src.count + 1):
+            reproject(
+                source=rio.band(src, i),
+                destination=rio.band(dest, i),
+                src_transform=src.transform,
+                src_crs=src.crs,
+                dst_transform=transform,
+                dst_crs=ref_src.crs,
+                resampling=Resampling.nearest
+            )
+
+    return rio.open(out_file, 'r+')
+
+
+def matchTopLeftCoord(src: rio.DatasetReader,
+                      ref_src: rio.DatasetReader) -> rio.DatasetReader:
+    """
+    Align the top-left coordinate of the source raster to match the target raster,
+    while maintaining the original resolution of the source raster. Updates the source raster file in place.
+    :param src: source rasterio dataset reader object to alter (must be in "r+" mode)
+    :param ref_src: target rasterio dataset reader object to use as reference
+    :return: the altered source rasterio dataset reader object
+    """
+    # Get the top-left coordinate of the target raster
+    target_transform = ref_src.transform
+    target_top_left_x, target_top_left_y = target_transform[2], target_transform[5]
+
+    # Get the original resolution of the source raster
+    src_transform = src.transform
+    pixel_size_x = src_transform[0]
+    pixel_size_y = src_transform[4]
+
+    # Create a new transform for the source raster, keeping its resolution but adjusting the top-left corner
+    new_transform = from_origin(target_top_left_x, target_top_left_y, pixel_size_x, -pixel_size_y)
+
+    # Update the transform of the source raster in place
+    src.transform = new_transform
+    src.update_tags(transform=str(new_transform))
+
+    return src
 
 
 def mosaicRasters(mosaic_list: list[str, rio.DatasetReader],
@@ -935,6 +1024,37 @@ def mosaicRasters(mosaic_list: list[str, rio.DatasetReader],
         calculateStatistics(dst)
 
     return rio.open(out_file, 'r+')
+
+
+def rasterExtentToPoly(src: rio.DatasetReader,
+                       out_file: str) -> None:
+    """
+    Function to convert a raster to a polygon shapefile
+    :param src: input rasterio dataset reader object
+    :param out_file: location and name to save output polygon extent shapefile
+    :return: None
+    """
+    # Get the bounding box (extent) of the raster
+    raster_bounds = src.bounds
+    crs = src.crs  # Get the coordinate reference system of the raster
+
+    # Create a polygon from the bounding box
+    raster_polygon = box(raster_bounds.left, raster_bounds.bottom, raster_bounds.right, raster_bounds.top)
+
+    # Define the schema for the shapefile
+    schema = {
+        'geometry': 'Polygon',
+        'properties': {}
+    }
+
+    # Save the polygon as a shapefile
+    with fiona.open(out_file, 'w', driver='ESRI Shapefile', crs=crs, schema=schema) as shp:
+        shp.write({
+            'geometry': mapping(raster_polygon),
+            'properties': {}
+        })
+
+    return
 
 
 def rasterToPoints(src: rio.DatasetReader,
@@ -1051,14 +1171,15 @@ def rasterToPoly(src: rio.DatasetReader,
 
 def reprojRaster(src: rio.DatasetReader,
                  out_file: str,
-                 out_crs: str = 'EPSG:4326') -> rio.DatasetReader:
+                 out_crs: int = 4326) -> rio.DatasetReader:
     """
     Function to reproject a raster to a different coordinate system
     :param src: input rasterio dataset reader object
     :param out_file: location and name to save output raster
-    :param out_crs: string defining new projection (e.g., 'EPSG:4326')
+    :param out_crs: the EPSG number of the new projection (e.g., 4326)
     :return: rasterio dataset reader object in 'r+' mode
     """
+    out_crs = f'EPSG:{out_crs}'
     # Calculate transformation needed to reproject raster to out_crs
     transform, width, height = calculate_default_transform(
         src.crs, out_crs, src.width, src.height, *src.bounds
@@ -1127,11 +1248,13 @@ def resampleRaster(src: rio.DatasetReader,
     )
 
     # Update the metadata with new dimensions and transform
-    out_meta.update({
-        'height': ref_height,
-        'width': ref_width,
-        'transform': ref_transform
-    })
+    out_meta.update(
+        {
+            'height': ref_height,
+            'width': ref_width,
+            'transform': ref_transform
+        }
+    )
 
     # Write the resampled data to a new raster file
     with rio.open(out_file, 'w', **out_meta) as dst:
@@ -1238,6 +1361,67 @@ def toMultiband(path_list: list[str],
     return rio.open(out_file, 'r+')
 
 
+def trimNoDataExtent(src):
+    """
+    Function to trim the extent of a raster by removing areas with NoData values and adjusting the bounds
+    to fit the actual data. Updates the original raster file in place.
+    :param src: input rasterio dataset reader object (must be in "r+" mode)
+    :return: the altered source rasterio dataset reader object
+    """
+    data = src.read(1, masked=True)
+    # Read all bands into a list of arrays
+    bands = src.count
+    all_data = [src.read(band + 1) for band in range(bands)]
+
+    # Find valid data indices across all bands
+    # valid_mask = np.zeros_like(all_data[0], dtype=bool)
+    # for data in all_data:
+    #     valid_mask |= ~np.isnan(data)  # Update the valid mask
+
+    # Get the bounding box of valid data
+    valid_rows, valid_cols = np.where(~data.mask)
+    if valid_rows.size == 0 or valid_cols.size == 0:
+        raise RuntimeWarning('No valid data found. No changes made.')
+
+    top_left_row = min(valid_rows)
+    bottom_right_row = max(valid_rows)
+    top_left_col = min(valid_cols)
+    bottom_right_col = max(valid_cols)
+
+    # Crop the data for each band
+    cropped_data = [data[top_left_row:bottom_right_row + 1, top_left_col:bottom_right_col + 1] for data in all_data]
+
+    # Update the transform to reflect the cropped extent
+    transform = src.transform
+    new_left = transform[2] + top_left_col * transform[0]
+    new_right = transform[2] + (bottom_right_col + 1) * transform[0]
+    new_top = transform[5] + top_left_row * transform[4]
+    new_bottom = transform[5] + (bottom_right_row + 1) * transform[4]
+
+    # Create a new transform for the trimmed raster
+    new_transform = from_bounds(new_left, new_bottom, new_right, new_top,
+                                cropped_data[0].shape[1],  # new width
+                                cropped_data[0].shape[0])  # new height
+
+    # Update metadata
+    out_meta = src.meta.copy()
+    out_meta.update({
+        'transform': new_transform,
+        'height': cropped_data[0].shape[0],
+        'width': cropped_data[0].shape[1]
+    })
+
+    out_file = src.name
+    src.close()
+
+    # Re-open the raster file in write mode ('w') to overwrite it with the trimmed data
+    with rio.open(out_file, 'w', **out_meta) as dst:
+        for band in range(bands):
+            dst.write(cropped_data[band], band + 1)
+
+    return rio.open(out_file, 'r+')
+
+
 def updateRaster(src: rio.DatasetReader,
                  array: np.ndarray,
                  band: int = None,
@@ -1283,7 +1467,8 @@ def updateRaster(src: rio.DatasetReader,
 # def updateLargeRas_wSmallRas(src_lrg, src_small, nodata_val=None):
 #     """
 #     Function to update values in a large raster with values from a smaller raster.
-#     The smaller raster must fit within the extent of the large raster.
+#     The smaller raster must fit within the extent of the large raster,
+#     and have the same resolution and grid alignment.
 #     :param src_lrg: input rasterio dataset reader object of larger raster
 #     :param src_small: input rasterio dataset reader object of smaller raster
 #     :param nodata_val: the value corresponding to no data; used to exclude those values from the update
