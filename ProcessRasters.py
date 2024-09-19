@@ -1211,13 +1211,15 @@ def reprojRaster(src: rio.DatasetReader,
 def resampleRaster(src: rio.DatasetReader,
                    ref_src: rio.DatasetReader,
                    out_file: str,
-                   band: int = 1) -> rio.DatasetReader:
+                   band: int = 1,
+                   match_extents: bool = False) -> rio.DatasetReader:
     """
     Function to resample the resolution of one raster to match that of a reference raster
     :param src: input rasterio dataset reader object
     :param ref_src: reference rasterio dataset reader object
     :param out_file: location and name to save output raster
     :param band: integer representing a specific band to extract points from (default = 1)
+    :param match_extents:
     :return: rasterio dataset reader object in 'r+' mode
     """
     # Get the transform, dimensions, and projection of the reference dataset
@@ -1236,16 +1238,32 @@ def resampleRaster(src: rio.DatasetReader,
     # Prepare the destination array
     out_array = np.empty((ref_height, ref_width), dtype=src.read(1).dtype)
 
-    # Reproject the source raster to the reference raster's grid
-    reproject(
-        source=src.read(band),
-        destination=out_array,
-        src_transform=src_transform,
-        src_crs=src_crs,
-        dst_transform=ref_transform,
-        dst_crs=ref_crs,
-        resampling=Resampling.nearest
-    )
+    # If match_extents is True, match the extents of the reference raster
+    if match_extents:
+        ref_bounds = ref_src.bounds
+        reproject(
+            source=src.read(band),
+            destination=out_array,
+            src_transform=src_transform,
+            src_crs=src_crs,
+            dst_transform=ref_transform,
+            dst_crs=ref_crs,
+            dst_width=ref_width,
+            dst_height=ref_height,
+            dst_bounds=ref_bounds,  # Ensure that the destination matches the reference extent
+            resampling=Resampling.nearest
+        )
+    else:
+        # Reproject to match resolution but maintain the source extent
+        reproject(
+            source=src.read(band),
+            destination=out_array,
+            src_transform=src_transform,
+            src_crs=src_crs,
+            dst_transform=ref_transform,
+            dst_crs=ref_crs,
+            resampling=Resampling.nearest
+        )
 
     # Update the metadata with new dimensions and transform
     out_meta.update(
