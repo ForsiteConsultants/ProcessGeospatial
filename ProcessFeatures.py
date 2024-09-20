@@ -267,9 +267,9 @@ def featureExtentToPoly(gdf: gpd.GeoDataFrame,
     """
     Function buffers each polygon in the GeoDataFrame by the buffer_size and returns a new GeoDataFrame
     with polygons representing the extent (bounding box) of the buffered polygons.
-    :param gdf: the input polygon
+    :param gdf: input GeoDataFrame object
     :param buffer_size: the buffer size to apply around the polygon
-    :return: A GeoDataFrame with polygons based on the extents (bounding boxes) of the buffered polygons.
+    :return: a GeoDataFrame with polygons based on the extents (bounding boxes) of the buffered polygons.
     """
     if not isinstance(gdf, gpd.GeoDataFrame):
         raise TypeError('The gdf parameter must be a GeoDataFrame data type.')
@@ -449,15 +449,15 @@ def projectShapefile(src: fio.Collection,
 
 
 def saveShapeGDF(gdf: gpd.GeoDataFrame,
-                 out_file: str) -> gpd.GeoDataFrame:
+                 out_path: str) -> gpd.GeoDataFrame:
     """
     Function to save a GeoDataFrame as a shapefile
     :param gdf: Geopandas GeoDataFrame object
-    :param out_file: location and name to save output shapefile
+    :param out_path: location and name to save output shapefile
     :return: GeoDataFrame object
     """
-    gdf.to_file(out_file)
-    return gpd.read_file(out_file)
+    gdf.to_file(out_path)
+    return gpd.read_file(out_path)
 
 
 def shapefileToNumpyArray(in_path: str,
@@ -505,3 +505,42 @@ def shapefileToNumpyArray(in_path: str,
     else:
         # Combine geometries and attributes into a single NumPy array
         return np.array(list(zip(geometries_array, attributes_array)), dtype=object)
+
+
+def subsetPointsByBufferDistance(gdf: gpd.GeoDataFrame,
+                                 buffer_dist: float,
+                                 out_path: str,
+                                 new_crs: Optional[int] = None) -> gpd.GeoDataFrame:
+    """
+    Function to generate a subset of points from a shapefile, such that each point
+    is at least a given distance from all others.
+
+    Note: The gdf must be in a projected coordinate system, and the distance value must be in the
+    same units as the coordinate system. The new_crs parameter can be used to reproject the point
+    dataset if it is not currently in a projected coordinate system.
+    :param gdf: input GeoDataFrame object representing points
+    :param buffer_dist: minimum distance between points
+    :param out_path: output path to new shapefile
+    :param new_crs: EPSG code to reproject the point dataset
+    :return: a GeoDataFrame containing the subset of points.
+    """
+    # Ensure the CRS is projected in meters (for example, UTM)
+    gdf = gdf.to_crs(epsg=new_crs)
+
+    # Create an empty GeoDataFrame to store selected points
+    selected_points = gpd.GeoDataFrame(columns=gdf.columns, crs=gdf.crs)
+
+    # Iteratively select points
+    for i, point in gdf.iterrows():
+        if selected_points.empty:
+            selected_points = selected_points.append(point)
+        else:
+            # Check the minimum distance to already selected points
+            min_distance = selected_points.distance(point.geometry).min()
+            if min_distance >= buffer_dist:
+                selected_points = selected_points.append(point)
+
+    # Save the resulting subset as a new shapefile
+    selected_points.to_file(out_path)
+
+    return gpd.read_file(out_path)

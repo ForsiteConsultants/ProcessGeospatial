@@ -4,7 +4,6 @@ Created on Mon Jan 18 13:25:52 2024
 
 @author: Gregory A. Greene
 """
-# import os
 from typing import Union, Optional
 import numpy as np
 import fiona
