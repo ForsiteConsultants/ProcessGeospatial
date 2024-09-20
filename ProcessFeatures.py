@@ -513,7 +513,7 @@ def subsetPointsByBufferDistance(gdf: gpd.GeoDataFrame,
                                  gen_all_points: bool = False,
                                  new_crs: Optional[int] = None) -> list[str]:
     """
-    Function to generate a subset of points from a shapefile, such that each point
+    Function to generate a subset of points from a point geodataframe, such that each point
     is at least a given distance from all others.
 
     Note: The gdf must be in a projected coordinate system, and the distance value must be in the
@@ -526,39 +526,45 @@ def subsetPointsByBufferDistance(gdf: gpd.GeoDataFrame,
     :param new_crs: EPSG code to reproject the point dataset
     :return: a list of file paths to the output dataset(s)
     """
+    # Reset index in case an index has been set
+    gdf = gdf.reset_index()
+
     if new_crs is not None:
-        # Ensure the CRS is projected in meters (for example, UTM)
+        # Ensure the CRS is projected (for example, UTM)
         gdf = gdf.to_crs(epsg=new_crs)
 
-    # Initialize batch counter for multiple shapefile outputs
+        # Initialize batch counter for multiple shapefile outputs
     batch_count = 1
-
     output_list = []
 
     while not gdf.empty:
         # Create an empty GeoDataFrame to store selected points for this batch
         selected_points = gpd.GeoDataFrame(columns=gdf.columns, crs=gdf.crs)
+        selected_indices = []
 
         # Iteratively select points
         for i, point in gdf.iterrows():
             if selected_points.empty:
-                selected_points = selected_points.append(point)
+                selected_points = pd.concat([selected_points, point.to_frame().T])
+                selected_indices.append(i)
             else:
                 # Check the minimum distance to already selected points
                 min_distance = selected_points.distance(point.geometry).min()
                 if min_distance >= buffer_dist:
-                    selected_points = selected_points.append(point)
+                    selected_points = pd.concat([selected_points, point.to_frame().T])
+                    selected_indices.append(i)
 
         # Save the resulting subset as a new shapefile
         if gen_all_points:
             output_path = f'{out_path.strip(".shp")}_{batch_count}.shp'
         else:
             output_path = out_path
+        selected_points.set_crs(epsg=gdf.crs.to_epsg(), inplace=True)
         selected_points.to_file(output_path)
         output_list.append(output_path)
 
-        # Remove selected points from the original GeoDataFrame
-        gdf = gdf.drop(selected_points.index)
+        # Remove selected points from the original GeoDataFrame by their indices
+        gdf = gdf.drop(selected_indices)
 
         # If gen_all_points is False, exit after the first batch
         if not gen_all_points:
