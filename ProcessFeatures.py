@@ -527,7 +527,7 @@ def subsetPointsByBufferDistance(gdf: gpd.GeoDataFrame,
     :return: a list of file paths to the output dataset(s)
     """
     # Reset index in case an index has been set
-    gdf = gdf.reset_index()
+    gdf = gdf.copy().reset_index()
 
     if new_crs is not None:
         # Ensure the CRS is projected (for example, UTM)
