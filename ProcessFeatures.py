@@ -510,7 +510,8 @@ def shapefileToNumpyArray(in_path: str,
 def subsetPointsByBufferDistance(gdf: gpd.GeoDataFrame,
                                  buffer_dist: float,
                                  out_path: str,
-                                 new_crs: Optional[int] = None) -> gpd.GeoDataFrame:
+                                 gen_all_points: bool = False,
+                                 new_crs: Optional[int] = None) -> list[str]:
     """
     Function to generate a subset of points from a shapefile, such that each point
     is at least a given distance from all others.
@@ -521,26 +522,49 @@ def subsetPointsByBufferDistance(gdf: gpd.GeoDataFrame,
     :param gdf: input GeoDataFrame object representing points
     :param buffer_dist: minimum distance between points
     :param out_path: output path to new shapefile
+    :param gen_all_points: if True, rerun the iteration on remaining points until all have been processed
     :param new_crs: EPSG code to reproject the point dataset
-    :return: a GeoDataFrame containing the subset of points.
+    :return: a list of file paths to the output dataset(s)
     """
-    # Ensure the CRS is projected in meters (for example, UTM)
-    gdf = gdf.to_crs(epsg=new_crs)
+    if new_crs is not None:
+        # Ensure the CRS is projected in meters (for example, UTM)
+        gdf = gdf.to_crs(epsg=new_crs)
 
-    # Create an empty GeoDataFrame to store selected points
-    selected_points = gpd.GeoDataFrame(columns=gdf.columns, crs=gdf.crs)
+    # Initialize batch counter for multiple shapefile outputs
+    batch_count = 1
 
-    # Iteratively select points
-    for i, point in gdf.iterrows():
-        if selected_points.empty:
-            selected_points = selected_points.append(point)
-        else:
-            # Check the minimum distance to already selected points
-            min_distance = selected_points.distance(point.geometry).min()
-            if min_distance >= buffer_dist:
+    output_list = []
+
+    while not gdf.empty:
+        # Create an empty GeoDataFrame to store selected points for this batch
+        selected_points = gpd.GeoDataFrame(columns=gdf.columns, crs=gdf.crs)
+
+        # Iteratively select points
+        for i, point in gdf.iterrows():
+            if selected_points.empty:
                 selected_points = selected_points.append(point)
+            else:
+                # Check the minimum distance to already selected points
+                min_distance = selected_points.distance(point.geometry).min()
+                if min_distance >= buffer_dist:
+                    selected_points = selected_points.append(point)
 
-    # Save the resulting subset as a new shapefile
-    selected_points.to_file(out_path)
+        # Save the resulting subset as a new shapefile
+        if gen_all_points:
+            output_path = f'{out_path.strip(".shp")}_{batch_count}.shp'
+        else:
+            output_path = out_path
+        selected_points.to_file(output_path)
+        output_list.append(output_path)
 
-    return gpd.read_file(out_path)
+        # Remove selected points from the original GeoDataFrame
+        gdf = gdf.drop(selected_points.index)
+
+        # If gen_all_points is False, exit after the first batch
+        if not gen_all_points:
+            break
+
+        # Increment batch count
+        batch_count += 1
+
+    return output_list
