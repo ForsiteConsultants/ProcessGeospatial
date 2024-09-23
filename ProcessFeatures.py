@@ -104,9 +104,9 @@ def addFieldsToGeoJSON(src: dict,
     return src
 
 
-def assignDefaultValueToField_GeoJSON(src: dict,
-                                      field_name: str,
-                                      new_value: Union[float, int, str, None]):
+def assignDefaultFieldValue_GeoJSON(src: dict,
+                                    field_name: str,
+                                    new_value: Union[float, int, str, None]):
     """
     Assigns a default value to a specific field in each feature's properties in a GeoJSON object.
 
