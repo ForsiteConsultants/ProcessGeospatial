@@ -6,6 +6,7 @@ Created on Mon Jan 18 13:25:52 2024
 """
 from typing import Union, Optional
 import numpy as np
+import random
 import fiona
 import pandas as pd
 import pyproj as pp
@@ -1025,6 +1026,36 @@ def mosaicRasters(mosaic_list: list[str, rio.DatasetReader],
     return rio.open(out_file, 'r+')
 
 
+def normalizeRaster(src: rio.DatasetReader,
+                    out_file: str) -> rio.DatasetReader:
+    """
+    Function to normalize a raster by dividing each cell by the sum of all values in the raster,
+    so that all values must sum to 1 over the entire raster.
+
+    :param src: input rasterio dataset reader object with a single band of data
+    :param out_file: path to save the output raster
+    :return: rasterio dataset reader object in 'r+' mode
+    """
+    # Read the raster values into a numpy array
+    raster_array = src.read(1)
+
+    # Mask out invalid (NaN) values
+    raster_array = np.ma.masked_invalid(raster_array)
+
+    # Sum of all valid raster values
+    total_sum = raster_array.sum()
+
+    # Normalize the raster values to make them sum to 1
+    normalized_raster = raster_array / total_sum
+
+    # Write the normalized raster to a new file
+    profile = src.profile
+    with rio.open(out_file, 'w', **profile) as dst:
+        dst.write(normalized_raster.filled(np.nan), 1)
+
+    return rio.open(out_file, 'r+')
+
+
 def rasterExtentToPoly(src: rio.DatasetReader,
                        out_file: str) -> None:
     """
@@ -1278,6 +1309,68 @@ def resampleRaster(src: rio.DatasetReader,
         dst.write(out_array, 1)
 
     return rio.open(out_file, 'r+')
+
+
+def samplePointsFromProbDensRaster(src: rio.DatasetReader,
+                                   num_points: int,
+                                   out_file: str,
+                                   normalize_data: bool = False) -> None:
+    """
+    Function to sample points from a probability density raster.
+
+    Note: The probability density data must be normalized (i.e., all values must sum to 1 over the entire raster).
+    If the data are not normalized, set normalize_data to True to have the function normalize the data
+    before processing. E.g., a kernel density raster can be used as input, with normalized_data set to True.
+
+    :param src: input rasterio dataset reader object with a single band of data
+    :param num_points: number of points to sample
+    :param out_file: path to save the output shapefile or GeoPackage (.shp or .gpkg)
+    :param normalize_data: switch to normalize the data if it hasn't already been normalized
+    :return: None
+    """
+    # Read the raster values into a numpy array
+    raster_array = src.read(1)
+
+    # Mask out invalid (NaN) values
+    raster_array = np.ma.masked_invalid(raster_array)
+
+    # Get the affine transformation to convert pixel indices to coordinates
+    transform = src.transform
+
+    # Flatten the raster and get the corresponding probabilities
+    probabilities = raster_array.compressed()  # Only valid (non-NaN) values
+
+    if normalize_data:
+        probabilities /= probabilities.sum()  # Normalize data to sum to 1
+
+    # Get the indices of valid pixels
+    valid_indices = np.argwhere(~raster_array.mask)
+
+    # Randomly sample indices based on probabilities
+    sampled_indices = np.random.choice(range(len(probabilities)), size=num_points, replace=True, p=probabilities)
+    # sampled_indices = random.choices(range(len(probabilities)), weights=probabilities, k=num_points)
+
+    # Convert sampled indices back to row, col coordinates
+    sampled_coords = valid_indices[sampled_indices]
+
+    # Convert the row, col indices into real-world coordinates using the raster's affine transform
+    sampled_points = [Point(rio.transform.xy(transform, row, col)) for row, col in sampled_coords]
+
+    # Extract CRS from the raster dataset
+    raster_crs = src.crs
+
+    # Create a GeoDataFrame for the sampled points and set the CRS to match the raster
+    gdf = gpd.GeoDataFrame(geometry=sampled_points, crs=raster_crs)
+
+    # Save the result to a shapefile or GeoPackage based on the output extension
+    if out_file.endswith('.shp'):
+        gdf.to_file(out_file)
+    elif out_file.endswith('.gpkg'):
+        gdf.to_file(out_file, driver='GPKG')
+    else:
+        raise ValueError('Unsupported output format. Use .shp or .gpkg.')
+
+    return
 
 
 def sumRasters(src: rio.DatasetReader,
