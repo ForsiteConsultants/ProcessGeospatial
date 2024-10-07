@@ -148,15 +148,15 @@ def asciiToTiff(ascii_path: str,
 def calculateStatistics(src: rio.DatasetReader) -> None:
     """
     Function to recalculate statistics for each band of a rasterio dataset reader object
-    :param src: input rasterio dataset reader object
+    :param src: input rasterio dataset reader object in 'r+' mode
     :return: rasterio dataset reader object in 'r+' mode
     """
-    for bidx in src.indexes:
-        try:
-            src.stats()
-        except rio.errors.StatisticsError as e:
-            print(f'Rasterio Calculate Statistics Error: {e}')
-            continue
+    # Calculate statistics for all bands
+    stats = src.stats()
+
+    # Update dataset tags with the new statistics
+    for band in src.indexes:
+        src.update_tags(band, **stats[band])
 
     return
 
