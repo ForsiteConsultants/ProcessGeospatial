@@ -6,8 +6,8 @@ Created on Mon Feb  21 09:00:00 2024
 """
 
 import os
-import numpy
 import numpy as np
+import json
 import fiona as fio
 from fiona.crs import CRS, from_epsg
 # from fiona import Feature, Geometry
@@ -21,36 +21,56 @@ import itertools
 from typing import Union, Optional
 
 
-def addField(src: fio.Collection,
-             out_path: str,
-             new_field: Union[str, list[str]],
-             dtype: Union[str, list[str]],
-             field_value: any = np.nan) -> fio.Collection:
+def _verifyGeoJSON(geojson_obj):
     """
-    Function to add a field to an existing shapefile.
+    Checks if the input is a valid GeoJSON object and identifies its type.
+
+    :param geojson_obj: A Python object representing a GeoJSON structure.
+    :return: The GeoJSON type if valid, or None if it's not a GeoJSON.
+    """
+    if isinstance(geojson_obj, dict):
+        geojson_type = geojson_obj.get('type', None)
+
+        if geojson_type in ['FeatureCollection', 'Feature']:
+            return geojson_type
+        elif isinstance(geojson_obj.get('geometry', None), dict):
+            geometry_type = geojson_obj['geometry'].get('type', None)
+            return geometry_type
+
+    return None
+
+
+def addFieldsToShapefile(src: fio.Collection,
+                         out_path: str,
+                         new_fields: Union[str, list[str]],
+                         dtype: Union[str, list[str]],
+                         field_value: any = np.nan) -> fio.Collection:
+    """
+    Function to add a field(s) to an existing shapefile.
     At present, this function only works by creating a new shapefile.
+
     :param src: fiona collection object
     :param out_path: path to new output shapefile
-    :param new_field: name of new field
+    :param new_fields: name of new field
     :param dtype: data type of new field (default: 'float')
     :param field_value: value to assign to new field; must match dtype
     :return: updated fiona collection object in read mode
     """
     src_crs = src.crs
     src_schema = src.schema.copy()
-    if isinstance(new_field, list):
-        for i, field in enumerate(new_field):
+    if isinstance(new_fields, list):
+        for i, field in enumerate(new_fields):
             src_schema['properties'][field] = dtype[i]
     else:
-        src_schema['properties'][new_field] = dtype
+        src_schema['properties'][new_fields] = dtype
 
     with fio.open(out_path, 'w', 'ESRI Shapefile', src_schema, src_crs) as dst:
         for elem in src:
-            if isinstance(new_field, list):
-                for i, field in enumerate(new_field):
+            if isinstance(new_fields, list):
+                for i, field in enumerate(new_fields):
                     elem['properties'][field] = field_value
             else:
-                elem['properties'][new_field] = field_value
+                elem['properties'][new_fields] = field_value
 
             dst.write(
                 {
@@ -60,6 +80,51 @@ def addField(src: fio.Collection,
             )
 
     return fio.open(out_path, 'r')
+
+
+def addFieldsToGeoJSON(src: dict,
+                       new_fields: dict) -> dict:
+    """
+    Function to add new fields to each feature in a GeoJSON object.
+
+    :param src: The GeoJSON object (as a Python dictionary).
+    :param new_fields: A dictionary of field names and their corresponding values to add.
+        e.g., {'new_field1': 'default_value', 'new_field2': 100}
+    :return: The modified GeoJSON object.
+    """
+    # Verify GeoJSON data type
+    if _verifyGeoJSON(src) is None:
+        raise TypeError('Invalid data type. The "src" parameter must be a valid GeoJSON dictionary')
+
+    for feature in src['features']:
+        # Add each new field to the 'properties' of the feature
+        for field_name, field_value in new_fields.items():
+            feature['properties'][field_name] = field_value
+
+    return src
+
+
+def assignDefaultFieldValue_GeoJSON(src: dict,
+                                    field_name: str,
+                                    new_value: Union[float, int, str, None]):
+    """
+    Assigns a default value to a specific field in each feature's properties in a GeoJSON object.
+
+    :param src: The GeoJSON object (as a Python dictionary).
+    :param field_name: The name of the field to assign the default value to.
+    :param new_value: The new value to assign to all features.
+    :return: The modified GeoJSON object with updated field values.
+    """
+    # Verify GeoJSON data type
+    if _verifyGeoJSON(src) is None:
+        raise TypeError('Invalid data type. The "src" parameter must be a valid GeoJSON dictionary')
+
+    # Update field with new value
+    for feature in src['features']:
+        # Check if the field exists, if not, create it, and assign the default value
+        feature['properties'][field_name] = feature['properties'].get(field_name, new_value)
+
+    return src
 
 
 def bufferPoints(src: fio.Collection,
@@ -173,7 +238,7 @@ def featureClassToDataframe(gdb_path: str,
     Function to convert an ESRI feature class (in a file GDB) to a Pandas Dataframe
     :param gdb_path: path to the ESRI File GeoDatabase
     :param feature_class: name of the feature class
-    :param keep_fields: list of fields to keep in the output shapefile
+    :param keep_fields: list of fields to keep in the Dataframe
     :return: Pandas DataFrame containing the attribute data of the feature class
     """
     from osgeo import ogr
@@ -205,8 +270,47 @@ def featureClassToDataframe(gdb_path: str,
 
     # Close the data source
     gdb = None
+    del gdb
 
     return df
+
+
+def featureClassToGeoJSON(gdb_path: str,
+                          feature_class: str,
+                          keep_fields: Optional[list] = None,
+                          out_path: Optional[str] = None) -> json:
+    """
+    Function to convert an ESRI feature class (in a file GDB) to a GeoJSON file
+    :param gdb_path: path to the ESRI File GeoDatabase
+    :param feature_class: name of the feature class
+    :param keep_fields: list of fields to keep in the GeoJSON file
+    :param out_path: list of fields to keep in the GeoJSON file
+    :return: A GeoJSON version of the feature class
+    """
+    # Open the feature class using Fiona
+    with fio.open(gdb_path, layer=feature_class, driver='OpenFileGDB') as src:
+        features = []
+
+        # Iterate through each feature in the source
+        for feature in src:
+            # If specific fields are to be kept, filter the feature properties
+            if keep_fields:
+                filtered_properties = {k: v for k, v in feature['properties'].items() if k in keep_fields}
+                feature['properties'] = filtered_properties
+
+            features.append(feature)
+
+        # Convert to GeoJSON format
+        geojson = {
+            "type": "FeatureCollection",
+            "features": features
+        }
+
+        # Save to a .json file
+        with open(out_path, 'w') as f:
+            json.dump(geojson, f)
+
+    return geojson
 
 
 def featureClassToShapefile(gdb_path: str,
@@ -319,6 +423,16 @@ def getCoordinates(src: fio.Collection) -> list:
     return coordinates
 
 
+def getNumberFeatures_GeoJSON(geojson_obj):
+    """
+    Returns the number of features in a GeoJSON object.
+
+    :param geojson_obj: The GeoJSON object (as a Python dictionary).
+    :return: The number of features in the GeoJSON object.
+    """
+    return len(geojson_obj['features'])
+
+
 def getShapeGDF(in_path: str) -> gpd.GeoDataFrame:
     """
     Function returns a GeoDataFrame of the shapefile
@@ -339,6 +453,34 @@ def getShapefile(in_path: str,
     return fio.open(in_path, mode=mode)
 
 
+def subsetByFieldValue_GeoJSON(src: dict,
+                               field_name: str,
+                               field_value: Union[int, float, str, None]) -> dict:
+    """
+    Returns a subset of the GeoJSON object where the specified field is None in the properties.
+
+    :param src: The GeoJSON object (as a Python dictionary)
+    :param field_name: The name of the field to check for None values
+    :param field_value: The value in the field to search for
+    :return: A new GeoJSON object containing only the features where the field is None
+    """
+    # Verify GeoJSON data type
+    if _verifyGeoJSON(src) is None:
+        raise TypeError('Invalid data type. The "src" parameter must be a valid GeoJSON dictionary')
+
+    # Filter features where the specified field is None
+    subset_features = [
+        feature for feature in src['features']
+        if feature['properties'].get(field_name) is None
+    ]
+
+    # Return a new GeoJSON object containing the filtered features
+    return {
+        'type': 'FeatureCollection',
+        'features': subset_features
+    }
+
+
 def joinTable(src: fio.Collection,
               table_path: str,
               out_path: str,
@@ -351,6 +493,7 @@ def joinTable(src: fio.Collection,
     :param key_field: common field between the shapefile and table to use for joining
     :return: fiona collection object in read mode
     """
+
     def _fiona_dtype(dtype):
         """Map pandas dtype to Fiona field type."""
         if dtype.startswith('int'):
@@ -397,6 +540,30 @@ def joinTable(src: fio.Collection,
             dst.write(feature)
 
     return fio.open(out_path, 'r')
+
+
+def listLayersInGDB(gdb_path: str) -> list:
+    """
+    Lists all feature classes and layers in a file geodatabase.
+    :param gdb_path: The path to the file geodatabase (.gdb folder)
+    :return: A list of feature classes/layers in the geodatabase
+    """
+    if not os.path.isdir(gdb_path):
+        raise ValueError(f'The provided path "{gdb_path}" is not a valid directory.')
+
+    # List to store the names of all layers in the geodatabase
+    layers = []
+
+    # Open the file geodatabase using Fiona
+    try:
+        # Check for available layers using Fiona's open method
+        with fio.Env():
+            for layer in fio.listlayers(gdb_path):
+                layers.append(layer)
+    except Exception as e:
+        raise RuntimeError(f'Error reading the geodatabase: {e}')
+
+    return layers
 
 
 def projectGDF(gdf: gpd.GeoDataFrame,
@@ -460,9 +627,37 @@ def saveShapeGDF(gdf: gpd.GeoDataFrame,
     return gpd.read_file(out_path)
 
 
+def saveGeoJSON_ToGDB(src: dict,
+                      gdb_path: str,
+                      feature_class_name: str) -> None:
+    """
+    Saves a GeoJSON file as a feature class in a geodatabase.
+
+    :param src: Path to the GeoJSON file.
+    :param gdb_path: Path to the geodatabase.
+    :param feature_class_name: Name for the new feature class in the geodatabase.
+    """
+    # Convert GeoJSON features to a list of shapes and properties
+    features = src['features']
+    records = []
+
+    for feature in features:
+        geometry = shape(feature['geometry'])  # Convert geometry
+        properties = feature['properties']  # Get properties
+        records.append({'geometry': geometry, **properties})  # Combine geometry and properties
+
+    # Create a GeoDataFrame
+    gdf = gpd.GeoDataFrame(records)
+
+    # Save the GeoDataFrame to the geodatabase as a feature class
+    gdf.to_file(gdb_path, layer=feature_class_name, driver='FileGDB')
+
+    return
+
+
 def shapefileToNumpyArray(in_path: str,
                           out_type: Optional[str] = None,
-                          fields: Optional[list[str]] = None) -> numpy.ndarray:
+                          fields: Optional[list[str]] = None) -> np.ndarray:
     """
     Function to convert a shapefile to a NumPy array
     :param in_path: path to the shapefile
