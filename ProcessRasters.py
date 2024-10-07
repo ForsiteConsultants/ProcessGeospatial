@@ -153,7 +153,7 @@ def calculateStatistics(src: rio.DatasetReader) -> None:
     """
     for bidx in src.indexes:
         try:
-            src.statistics(bidx, clear_cache=True)
+            src.stats()
         except rio.errors.StatisticsError as e:
             print(f'Rasterio Calculate Statistics Error: {e}')
             continue
