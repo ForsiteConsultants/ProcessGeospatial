@@ -155,10 +155,17 @@ def calculateStatistics(src: rio.DatasetReader) -> None:
     stats = src.stats()
 
     # Update dataset tags with the new statistics
-    for band in src.indexes:
-        src.update_tags(band, **stats[band])
+    for i, band in enumerate(src.indexes):
+        # Convert the Statistics object to a dictionary
+        stats_dict = {
+            'min': stats[i].min,
+            'max': stats[i].max,
+            'mean': stats[i].mean,
+            'std': stats[i].std
+        }
+        src.update_tags(band, **stats_dict)
 
-    return
+    return src
 
 
 def changeDtype(src: rio.DatasetReader,
