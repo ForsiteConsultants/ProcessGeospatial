@@ -18,7 +18,7 @@ import geopandas as gpd
 import pandas as pd
 from pandas.api.types import infer_dtype
 import itertools
-from typing import Union, Optional
+from typing import Union, Optional, Literal
 
 
 def _verifyGeoJSON(geojson_obj):
@@ -40,46 +40,75 @@ def _verifyGeoJSON(geojson_obj):
     return None
 
 
-def addFieldsToShapefile(src: fio.Collection,
-                         out_path: str,
+def addFieldsToShapefile(src_path: str,
                          new_fields: Union[str, list[str]],
                          dtype: Union[str, list[str]],
-                         field_value: any = np.nan) -> fio.Collection:
+                         field_value: any = np.nan,
+                         out_path: str = None,
+                         overwrite: bool = False) -> fio.Collection:
     """
-    Function to add a field(s) to an existing shapefile.
-    At present, this function only works by creating a new shapefile.
+    Function to add field(s) to an existing shapefile.
+    Creates a new shapefile or optionally overwrites the original.
 
-    :param src: fiona collection object
-    :param out_path: path to new output shapefile
-    :param new_fields: name of new field
-    :param dtype: data type of new field (default: 'float')
-    :param field_value: value to assign to new field; must match dtype
-    :return: updated fiona collection object in read mode
+    :param src_path: Path to the original shapefile
+    :param out_path: Path to the output shapefile; if None, uses a temporary file
+    :param new_fields: Name of new field(s) as string or list of strings
+    :param dtype: Data type of new field(s) (e.g., 'float', 'str', 'int')
+    :param field_value: Value to assign to new field(s); must match dtype
+    :param overwrite: If True, overwrite the original shapefile with the updated version
+    :return: Updated fiona collection object in read mode
     """
-    src_crs = src.crs
-    src_schema = src.schema.copy()
-    if isinstance(new_fields, list):
-        for i, field in enumerate(new_fields):
-            src_schema['properties'][field] = dtype[i]
-    else:
-        src_schema['properties'][new_fields] = dtype
+    # Determine the output path
+    if out_path is None:
+        if overwrite:
+            # Create a temporary file in the same directory as the source file
+            src_dir = os.path.dirname(src_path)
+            out_path = os.path.join(src_dir, "temp_output.shp")
+        else:
+            # Create a standard temporary file if not overwriting
+            out_path = src_path.replace('.shp', '_updated.shp')
 
-    with fio.open(out_path, 'w', 'ESRI Shapefile', src_schema, src_crs) as dst:
-        for elem in src:
-            if isinstance(new_fields, list):
-                for i, field in enumerate(new_fields):
-                    elem['properties'][field] = field_value
-            else:
-                elem['properties'][new_fields] = field_value
+    # Open the original shapefile
+    with fio.open(src_path, "r") as src:
+        src_crs = src.crs
+        src_schema = src.schema.copy()
 
-            dst.write(
-                {
+        # Modify the schema to include the new field(s)
+        if isinstance(new_fields, list):
+            for i, field in enumerate(new_fields):
+                src_schema['properties'][field] = dtype[i]
+        else:
+            src_schema['properties'][new_fields] = dtype
+
+        # Write to the output shapefile with the updated schema
+        with fio.open(out_path, 'w', 'ESRI Shapefile', schema=src_schema, crs=src_crs) as dst:
+            for elem in src:
+                # Add new field(s) to properties
+                if isinstance(new_fields, list):
+                    for i, field in enumerate(new_fields):
+                        elem['properties'][field] = field_value
+                else:
+                    elem['properties'][new_fields] = field_value
+
+                dst.write({
                     'properties': elem['properties'],
                     'geometry': mapping(shape(elem['geometry']))
-                }
-            )
+                })
 
-    return fio.open(out_path, 'r')
+    # Optionally overwrite the original file with the output file
+    if overwrite:
+        for ext in ['.shp', '.shx', '.dbf', '.prj']:
+            original_file = src_path.replace('.shp', ext)
+            if os.path.exists(original_file):
+                os.remove(original_file)
+
+        for ext in ['.shp', '.shx', '.dbf', '.prj']:
+            temp_file = out_path.replace('.shp', ext)
+            os.rename(temp_file, src_path.replace('.shp', ext))
+
+        return fio.open(src_path, 'r')
+    else:
+        return fio.open(out_path, 'r')
 
 
 def addFieldsToGeoJSON(src: dict,
@@ -176,6 +205,120 @@ def bufferPoints(src: fio.Collection,
             })
 
     return fio.open(out_path, 'r')
+
+
+def calcGeometryAttributes(
+        src_path: str,
+        attributes: list[Literal['length', 'area', 'perimeter']],
+        field_names: list[str],
+        units: list[Literal['meters', 'kilometers', 'miles', 'square_kilometers', 'hectares', 'acres']] = None,
+        out_path: str = None,
+        overwrite: bool = False,
+        target_crs: str = 'EPSG:3395',
+        mode: str = 'r') -> fio.collection:
+    """
+    Calculates specified geometry attributes (length, area, perimeter) for features in a shapefile.
+    Reprojects unprojected data if needed for accurate measurements.
+
+    :param src_path: Path to the input shapefile
+    :param attributes: List of geometry attributes to calculate ('length', 'area', 'perimeter')
+    :param field_names: List of field names to store each attribute's calculated values
+    :param units: List of units for each attribute (e.g., 'meters', 'square_kilometers'). Default is None.
+    :param out_path: Path for the output shapefile with calculated attributes; if None, uses a temporary file
+    :param overwrite: If True, overwrite the original shapefile with the updated version
+    :param mode: mode to open the returned output shapefile with ('r', 'a', 'w'; default = 'r')
+    :param target_crs: EPSG code for the projected CRS to use if the input is unprojected
+    :return: fiona collection object
+    """
+    if units is None:
+        units = [None] * len(attributes)
+
+        # Set output path to a temporary file in the same directory as the source shapefile if out_path is not provided
+    src_dir = os.path.dirname(src_path)
+    output_path = out_path or os.path.join(src_dir, "temp_output.shp")
+
+    # Open the original shapefile
+    with fio.open(src_path, 'r') as src:
+        src_crs = CRS.from_user_input(src.crs)
+        is_projected = src_crs.is_projected
+
+        # Set up a transformer if reprojection is necessary
+        transformer = None
+        if not is_projected:
+            transformer = Transformer.from_crs(src_crs, CRS.from_user_input(target_crs), always_xy=True)
+
+        src_schema = src.schema.copy()
+
+        # Add fields to the schema for each attribute
+        for field_name in field_names:
+            src_schema['properties'][field_name] = 'float'
+
+        # Write to the new temporary shapefile with updated schema
+        with fio.open(output_path, 'w', 'ESRI Shapefile', schema=src_schema,
+                      crs=(target_crs if not is_projected else src.crs)) as dst:
+            for feature in src:
+                geom = shape(feature['geometry'])
+
+                # Reproject geometry if the data is unprojected
+                if transformer:
+                    geom = shape(transformer.transform(*geom.xy))
+
+                # Create a copy of the properties using `dict()`
+                updated_properties = dict(feature['properties'])
+
+                # Calculate each requested attribute and update the properties
+                for i, attr in enumerate(attributes):
+                    unit = units[i]
+                    field_name = field_names[i]
+
+                    if attr == 'length' and geom.geom_type in ['LineString', 'MultiLineString']:
+                        length = geom.length
+                        if unit == 'kilometers':
+                            length /= 1000
+                        elif unit == 'miles':
+                            length *= 0.000621371
+                        updated_properties[field_name] = length
+
+                    elif attr == 'area' and geom.geom_type in ['Polygon', 'MultiPolygon']:
+                        area = geom.area
+                        if unit == 'square_kilometers':
+                            area /= 1e6
+                        elif unit == 'hectares':
+                            area /= 1e4
+                        elif unit == 'acres':
+                            area *= 0.000247105
+                        updated_properties[field_name] = area
+
+                    elif attr == 'perimeter' and geom.geom_type in ['Polygon', 'MultiPolygon']:
+                        perimeter = geom.length  # Perimeter is the length of the boundary
+                        if unit == 'kilometers':
+                            perimeter /= 1000
+                        elif unit == 'miles':
+                            perimeter *= 0.000621371
+                        updated_properties[field_name] = perimeter
+
+                    else:
+                        updated_properties[field_name] = None  # Set to None if attribute not applicable
+
+                # Update the feature with calculated attributes and write it to the output
+                dst.write({
+                    'properties': updated_properties,
+                    'geometry': mapping(geom)
+                })
+
+    # Optionally overwrite the original shapefile with the temporary file
+    if overwrite:
+        for ext in ['.shp', '.shx', '.dbf', '.prj']:
+            original_file = src_path.replace('.shp', ext)
+            if os.path.exists(original_file):
+                os.remove(original_file)
+
+        for ext in ['.shp', '.shx', '.dbf', '.prj']:
+            temp_file = output_path.replace('.shp', ext)
+            os.rename(temp_file, src_path.replace('.shp', ext))
+        out_path = src_path
+
+    return fio.open(out_path, mode=mode)
 
 
 def copyShapefile(src: fio.Collection,
@@ -448,37 +591,67 @@ def getShapefile(in_path: str,
     Function returns a fiona collection object representing the shapefile
     :param in_path: path to shapefile
     :param mode: mode to open the shapefile with ('r', 'a', 'w'; default = 'r')
-    :return: fiona collection object in read mode
+    :return: fiona collection object
     """
     return fio.open(in_path, mode=mode)
 
 
-def subsetByFieldValue_GeoJSON(src: dict,
-                               field_name: str,
-                               field_value: Union[int, float, str, None]) -> dict:
+def intersectShapefiles(in_paths: list[str],
+                       out_path: str,
+                       out_crs_epsg: int = None,
+                       mode: str = 'r') -> fio.collection:
     """
-    Returns a subset of the GeoJSON object where the specified field is None in the properties.
+    Intersect features from multiple shapefiles and save the intersected geometries to a new shapefile.
 
-    :param src: The GeoJSON object (as a Python dictionary)
-    :param field_name: The name of the field to check for None values
-    :param field_value: The value in the field to search for
-    :return: A new GeoJSON object containing only the features where the field is None
+    :param in_paths:  List of paths to input shapefiles.
+    :param out_path: Path to the output shapefile where intersections will be saved.
+    :param out_crs_epsg: EPSG code for output CRS. Uses the CRS from the first input if not provided.
+    :param mode: mode to open the returned output shapefile with ('r', 'a', 'w'; default = 'r')
+    :return: fiona collection object in read mode
     """
-    # Verify GeoJSON data type
-    if _verifyGeoJSON(src) is None:
-        raise TypeError('Invalid data type. The "src" parameter must be a valid GeoJSON dictionary')
+    # Initialize a combined schema with an unknown geometry type
+    combined_schema = {'geometry': 'Unknown', 'properties': {}}
 
-    # Filter features where the specified field is None
-    subset_features = [
-        feature for feature in src['features']
-        if feature['properties'].get(field_name) is None
-    ]
+    # Combine all properties from input shapefiles into combined_schema
+    for path in in_paths:
+        with fio.open(path, "r") as src:
+            # Update geometry type based on the first layer
+            if combined_schema['geometry'] == 'Unknown':
+                combined_schema['geometry'] = src.schema['geometry']
 
-    # Return a new GeoJSON object containing the filtered features
-    return {
-        'type': 'FeatureCollection',
-        'features': subset_features
-    }
+            for field_name, field_type in src.schema['properties'].items():
+                if field_name not in combined_schema['properties']:
+                    combined_schema['properties'][field_name] = field_type
+
+    # Set output CRS
+    crs = from_epsg(out_crs_epsg) if out_crs_epsg else fio.open(in_paths[0], 'r').crs
+
+    # Write the intersected output with the combined schema
+    with fio.open(out_path, 'w', 'ESRI Shapefile', schema=combined_schema, crs=crs) as output:
+        # Read each feature from all input shapefiles
+        features = []
+        for filepath in in_paths:
+            with fio.open(filepath, 'r') as layer:
+                features.append([(shape(feature['geometry']), feature['properties']) for feature in layer])
+
+        # Loop through all combinations of features across shapefiles to calculate intersections
+        for i, (geom1, props1) in enumerate(features[0]):
+            for j in range(1, len(features)):
+                for geom2, props2 in features[j]:
+                    intersection = geom1.intersection(geom2)
+                    if not intersection.is_empty:
+                        # Combine properties from both features
+                        combined_properties = {**props1, **props2}
+                        ordered_properties = {key: combined_properties.get(key, None) for key in
+                                              combined_schema['properties'].keys()}
+
+                        intersected_feature = {
+                            'geometry': mapping(intersection),
+                            'properties': ordered_properties
+                        }
+                        output.write(intersected_feature)
+
+    return fio.open(out_path, mode=mode)
 
 
 def joinTable(src: fio.Collection,
@@ -564,6 +737,60 @@ def listLayersInGDB(gdb_path: str) -> list:
         raise RuntimeError(f'Error reading the geodatabase: {e}')
 
     return layers
+
+
+def pointsToBearingDistanceCSV(shapefile_paths: list,
+                               x_field: str,
+                               y_field: str,
+                               distance: float,
+                               bearing_interval: int,
+                               output_csv_path: str) -> None:
+    """
+    Function generates a CSV file with bearings at specified intervals for each point in a shapefile.
+    This function will read the shapefile, extract the X and Y fields, and generate a CSV with
+    bearings from 0 to 360 degrees at the specified interval (e.g., every 5 degrees). The CSV
+    will be saved to the path specified by `output_csv_path`.
+
+    :param shapefile_paths: List of paths to the input point shapefiles
+    :param x_field: Name of the field containing X coordinates in the shapefile
+    :param y_field: Name of the field containing Y coordinates in the shapefile
+    :param distance: Fixed distance to apply for all generated rows
+    :param bearing_interval: Interval for bearings in degrees (e.g., 5 for bearings at 5-degree increments).
+    :param output_csv_path: Path where the output CSV file will be saved.
+    :return: None
+    """
+    # Initialize a list to store the output rows
+    all_rows = []
+
+    # Iterate over each shapefile in the list
+    for shapefile_path in shapefile_paths:
+        # Load the shapefile using geopandas
+        gdf = gpd.read_file(shapefile_path)
+
+        # Iterate over each point in the GeoDataFrame
+        for index, row in gdf.iterrows():
+            point_id = row['Point_ID']
+            x = row[x_field]
+            y = row[y_field]
+
+            # Generate bearings at the specified interval
+            for bearing in range(0, 361, bearing_interval):
+                # Append each row to the list
+                all_rows.append({
+                    'Point_ID': point_id,
+                    'X': x,
+                    'Y': y,
+                    'Distance': distance,
+                    'Bearing': bearing
+                })
+
+    # Convert the list of rows into a DataFrame
+    df = pd.DataFrame(all_rows)
+
+    # Save the DataFrame to a CSV file
+    df.to_csv(output_csv_path, index=False)
+
+    return
 
 
 def projectGDF(gdf: gpd.GeoDataFrame,
@@ -700,6 +927,34 @@ def shapefileToNumpyArray(in_path: str,
     else:
         # Combine geometries and attributes into a single NumPy array
         return np.array(list(zip(geometries_array, attributes_array)), dtype=object)
+
+
+def subsetByFieldValue_GeoJSON(src: dict,
+                               field_name: str,
+                               field_value: Union[int, float, str, None]) -> dict:
+    """
+    Returns a subset of the GeoJSON object where the specified field is None in the properties.
+
+    :param src: The GeoJSON object (as a Python dictionary)
+    :param field_name: The name of the field to check for None values
+    :param field_value: The value in the field to search for
+    :return: A new GeoJSON object containing only the features where the field is None
+    """
+    # Verify GeoJSON data type
+    if _verifyGeoJSON(src) is None:
+        raise TypeError('Invalid data type. The "src" parameter must be a valid GeoJSON dictionary')
+
+    # Filter features where the specified field is None
+    subset_features = [
+        feature for feature in src['features']
+        if feature['properties'].get(field_name) is None
+    ]
+
+    # Return a new GeoJSON object containing the filtered features
+    return {
+        'type': 'FeatureCollection',
+        'features': subset_features
+    }
 
 
 def subsetPointsByBufferDistance(gdf: gpd.GeoDataFrame,
