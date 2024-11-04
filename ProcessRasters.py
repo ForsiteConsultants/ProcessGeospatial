@@ -57,14 +57,14 @@ def arrayToRaster(array: np.ndarray,
                   out_file: str,
                   ras_profile: dict,
                   nodata_val: Optional[Union[int, float]] = None,
-                  data_type: Optional[type] = None) -> rio.DatasetReader:
+                  dtype: np.dtype = np.float32) -> rio.DatasetReader:
     """
     Function to convert a numpy array to a raster
     :param array: input numpy array
     :param out_file: path (with name) to save output raster
     :param ras_profile: profile of reference rasterio dataset reader object
     :param nodata_val: new integer or floating point value to assign as "no data" (default = None)
-    :param data_type: string representing the data type of new raster (int or float) (default = None)
+    :param dtype: the numpy data type of new raster
     :return: rasterio dataset reader object in r+ mode
     """
     # Get profile
@@ -78,9 +78,9 @@ def arrayToRaster(array: np.ndarray,
         profile.update(
             nodata=nodata_val  # Specify nodata value
         )
-    if data_type:
+    if dtype:
         profile.update(
-            dtype=data_type  # Specify nodata value
+            dtype=dtype
         )
 
     # Create new raster file
@@ -151,30 +151,40 @@ def calculateStatistics(src: rio.DatasetReader) -> None:
     :param src: input rasterio dataset reader object in 'r+' mode
     :return: rasterio dataset reader object in 'r+' mode
     """
-    # Calculate statistics for all bands
-    stats = src.stats()
+    try:
+        # Calculate statistics for all bands
+        stats = src.stats()
 
-    # Update dataset tags with the new statistics
-    for i, band in enumerate(src.indexes):
-        # Convert the Statistics object to a dictionary
-        stats_dict = {
-            'min': stats[i].min,
-            'max': stats[i].max,
-            'mean': stats[i].mean,
-            'std': stats[i].std
-        }
-        src.update_tags(band, **stats_dict)
+        # Update dataset tags with the new statistics
+        for i, band in enumerate(src.indexes):
+            # Convert the Statistics object to a dictionary
+            stats_dict = {
+                'min': stats[i].min,
+                'max': stats[i].max,
+                'mean': stats[i].mean,
+                'std': stats[i].std
+            }
+            src.update_tags(band, **stats_dict)
 
-    return src
+        return src
+    except:
+
+        for bidx in src.indexes:
+            try:
+                src.statistics(bidx, clear_cache=True)
+            except rio.errors.StatisticsError as e:
+                print(f'Rasterio Calculate Statistics Error: {e}')
+                continue
+        return
 
 
 def changeDtype(src: rio.DatasetReader,
-                datatype: str,
+                dtype: np.dtype,
                 nodata_val: Optional[Union[int, float]] = None) -> rio.DatasetReader:
     """
     Function to change a raster's datatype to int or float
     :param src: input rasterio dataset reader object
-    :param datatype: new data type (int or float)
+    :param dtype: new numpy data type (e.g., np.int32, np.float32)
     :param nodata_val: value to assign as "no data" (default = None)
     :return: rasterio dataset reader object in 'r+' mode
     """
@@ -184,22 +194,17 @@ def changeDtype(src: rio.DatasetReader,
     # Convert array values to integer type
     src_array = src.read()
     src_array[src_array == src.nodata] = nodata_val
-    if 'int' in datatype:
-        src_array = np.asarray(src_array, dtype=int)
-    else:
-        src_array = np.asarray(src_array, dtype=float)
+    src_array = np.asarray(src_array, dtype=dtype)
 
-    # Get file path of dataset object
+    # Get file path and profile of the dataset object
     src_path = src.name
-
-    # Get profile of dataset object
     profile = src.profile
 
     # Specify LZW compression and assign integer datatype
     profile.update(
         compress='lzw',
         nodata=nodata_val,
-        dtype=datatype)
+        dtype=dtype)
 
     src.close()
 
@@ -264,8 +269,8 @@ def clipRaster_wShape(src: rio.DatasetReader,
     :param out_file: location and name to save output raster
     :param select_field: name of field to use to select specific features for clipping
     :param select_value: value(s) in select_field to use for the feature selection
-    :param all_touched: include all cells that touch the shapefile boundary (in addition to inside the boundary)
-         (default = True)
+    :param all_touched: If True, all cells touching the shapefile boundary are also included in the output.
+        If False, only cells inside the boundary are included. (default = True)
     :param crop: crop output extent to match the extent of the data (default = True)
     :return: rasterio dataset reader object in 'r+' mode
     """
@@ -592,6 +597,9 @@ def getAspect(src: rio.DatasetReader,
     :param out_file: the path and name of the output file
     :return: rasterio dataset reader object in r+ mode
     """
+    # Enable exceptions in GDAL to handle potential errors
+    gdal.UseExceptions()
+
     # Get file path of dataset object
     src_path = src.name
 
@@ -656,13 +664,15 @@ def getFirstLast(in_rasters: list[rio.DatasetReader],
 def getGridCoordinates(src: rio.DatasetReader,
                        out_file_x: str,
                        out_file_y: str,
-                       out_crs: str = 'EPSG:4326') -> (rio.DatasetReader, rio.DatasetReader):
+                       out_crs: str = 'EPSG:4326',
+                       dtype: np.dtype = np.float32) -> tuple[rio.DatasetReader, rio.DatasetReader]:
     """
     Function returns two X and Y rasters with cell values matching the grid cell coordinates (one for Xs, one for Ys)
     :param src: a rasterio dataset reader object
     :param out_file_x: path to output raster for X coordinates
     :param out_file_y: path to output raster for Y coordinates
     :param out_crs: string defining new projection (e.g., 'EPSG:4326')
+    :param dtype: numpy data type for output rasters (default is np.float32)
     :return: a tuple (X, Y) of rasterio dataset reader objects in 'r+' mode
     """
     # Get the affine transformation matrix
@@ -682,7 +692,6 @@ def getGridCoordinates(src: rio.DatasetReader,
 
     # Create a new affine transformation matrix for EPSG:4326
     transformer = pp.Transformer.from_crs(src_crs, out_crs, always_xy=True)
-    # new_transform = Affine.translation(x_start, y_start) * Affine.scale(pixel_size_x, pixel_size_y)
 
     # Calculate the x & y coordinates for each cell
     x_coords = np.linspace(x_start + pixel_size_x / 2, x_end - pixel_size_x / 2, cols)
@@ -691,24 +700,21 @@ def getGridCoordinates(src: rio.DatasetReader,
     lon, lat = transformer.transform(lon.flatten(), lat.flatten())
 
     # Reshape the lon and lat arrays to match the shape of the raster
-    lon = lon.reshape(rows, cols)
-    lat = lat.reshape(rows, cols)
+    lon = lon.reshape(rows, cols).astype(dtype)
+    lat = lat.reshape(rows, cols).astype(dtype)
 
-    # Create output profiles for x and y coordinate rasters
+    # Create output profiles for x and y coordinate rasters, setting dtype to the specified parameter
     profile = src.profile.copy()
+    profile.update(dtype=dtype)
 
     # Write X coordinate data to out_path_x
     with rio.open(out_file_x, 'w', **profile) as dst:
-        # Write data to out_path_x
         dst.write(lon, 1)
-        # Calculate new statistics
         calculateStatistics(dst)
 
     # Write Y coordinate data to out_path_y
     with rio.open(out_file_y, 'w', **profile) as dst:
-        # Write data to out_path_y
         dst.write(lat, 1)
-        # Calculate new statistics
         calculateStatistics(dst)
 
     return rio.open(out_file_x, 'r+'), rio.open(out_file_y, 'r+')
@@ -860,9 +866,13 @@ def getSlope(src: rio.DatasetReader,
     :param slopeformat: slope format ("degree" or "percent")
     :return: rasterio dataset reader object in 'r+' mode
     """
+    # Enable exceptions in GDAL to handle potential errors
+    gdal.UseExceptions()
+
     # Get file path of dataset object
     src_path = src.name
 
+    # Process the slope calculation with GDAL
     gdal.DEMProcessing(out_file,
                        src_path,
                        'slope',
@@ -877,13 +887,13 @@ def getSlope(src: rio.DatasetReader,
 
 
 def Integer(src: rio.DatasetReader,
-            datatype: np.dtype,
+            dtype: np.dtype,
             nodata_val: int,
             round_values: bool = False) -> rio.DatasetReader:
     """
     Function to convert a raster to an Integer data type. Updates the source raster file in place.
     :param src: input rasterio dataset reader object
-    :param datatype: numpy dtype; e.g., signed (np.int8, np.int32) or unsigned (np.uint8, np.unit32)
+    :param dtype: numpy dtype; e.g., signed (np.int8, np.int32) or unsigned (np.uint8, np.unit32)
     :param nodata_val: integer value to assign as no data
     :param round_values: round values before converting to Integer
     :return: rasterio dataset reader object in 'r+' mode
@@ -906,7 +916,7 @@ def Integer(src: rio.DatasetReader,
     profile.update(
         compress='lzw',
         nodata=nodata_val,
-        dtype=datatype)
+        dtype=dtype)
 
     src.close()
     del src
@@ -1152,6 +1162,7 @@ def rasterToPoly(src: rio.DatasetReader,
                  block_size: int = 256) -> None:
     """
     Function to convert a raster to a polygon shapefile
+
     :param src: input rasterio dataset reader object
     :param out_file: location and name to save output polygon shapefile
     :param shp_value_field: name of the shapefile field that will contain the raster values (Default = "Value")
@@ -1255,7 +1266,7 @@ def resampleRaster(src: rio.DatasetReader,
     :param ref_src: reference rasterio dataset reader object
     :param out_file: location and name to save output raster
     :param band: integer representing a specific band to extract points from (default = 1)
-    :param match_extents:
+    :param match_extents: if True, extents of the ref and src rasters will be matched
     :return: rasterio dataset reader object in 'r+' mode
     """
     # Get the transform, dimensions, and projection of the reference dataset
