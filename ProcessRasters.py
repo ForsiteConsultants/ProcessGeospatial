@@ -856,14 +856,31 @@ def getResolution(src: rio.DatasetReader) -> tuple:
     return src.res
 
 
+def setNull(src_path: str, nodata_val: Union[int, float]) -> None:
+    """
+    Function to set a new nodata value in an existing raster dataset.
+
+    :param src_path: Path to the raster dataset (TIFF only)
+    :param nodata_val: New nodata value to set in the dataset
+    """
+    # Open the dataset in 'r+' mode to allow modifications
+    with rio.open(src_path, 'r+') as dst:
+        # Set the nodata value in the dataset
+        dst.nodata = nodata_val
+        # Update the metadata with the new nodata value
+        dst.update_tags(nodata=nodata_val)
+
+    return
+
+
 def getSlope(src: rio.DatasetReader,
              out_file: str,
-             slopeformat: str) -> rio.DatasetReader:
+             slope_format: str) -> rio.DatasetReader:
     """
     Function to calculate slope from an elevation raster
     :param src: input rasterio dataset reader object
     :param out_file: the path and name of the output file
-    :param slopeformat: slope format ("degree" or "percent")
+    :param slope_format: slope format ("degree" or "percent")
     :return: rasterio dataset reader object in 'r+' mode
     """
     # Enable exceptions in GDAL to handle potential errors
@@ -876,7 +893,7 @@ def getSlope(src: rio.DatasetReader,
     gdal.DEMProcessing(out_file,
                        src_path,
                        'slope',
-                       slopeFormat=slopeformat)
+                       slopeFormat=slope_format)
 
     # Calculate new statistics
     temp_src = getRaster(out_file)
@@ -925,6 +942,12 @@ def Integer(src: rio.DatasetReader,
     with rio.open(src_path, 'w', **profile) as dst:
         # Write data to new raster
         dst.write(int_array)
+
+        # Set the nodata value explicitly in the dataset
+        dst.nodata = nodata_val
+
+        # Update the metadata with the new nodata value
+        dst.update_tags(nodata=nodata_val)
 
     return rio.open(src_path, 'r+')
 
@@ -1555,6 +1578,7 @@ def updateRaster(src: rio.DatasetReader,
                  nodata_val: Union[int, float] = None) -> rio.DatasetReader:
     """
     Function to update values in a raster with an input array
+
     :param src: input rasterio dataset reader object (TIFF only)
     :param array: numpy array object
     :param band: integer representing a specific band to update
@@ -1565,15 +1589,9 @@ def updateRaster(src: rio.DatasetReader,
     profile = src.profile
 
     # Update profile
-    if nodata_val:
-        profile.update(
-            compress='lzw',  # Specify LZW compression
-            nodata=nodata_val  # Specify nodata value
-        )
-    else:
-        profile.update(
-            compress='lzw'  # Specify LZW compression
-        )
+    profile.update(
+        compress='lzw'  # Specify LZW compression
+    )
     src_path = src.name  # Get path of input source dataset
     src.close()  # Close input source dataset
 
@@ -1584,11 +1602,20 @@ def updateRaster(src: rio.DatasetReader,
             dst.write(array[0], band)
         else:
             dst.write(array)
+
+        # Set the nodata value explicitly in the dataset
+        if nodata_val is not None:
+            dst.nodata = nodata_val
+
+            # Update the metadata with the new nodata value
+            dst.update_tags(nodata=nodata_val)
+
         # Calculate new statistics
         calculateStatistics(dst)
 
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(src_path, 'r+')
+
 
 # STILL WORKING ON THIS FUNCTION
 # def updateLargeRas_wSmallRas(src_lrg, src_small, nodata_val=None):
