@@ -4,6 +4,7 @@ Created on Mon Jan 18 13:25:52 2024
 
 @author: Gregory A. Greene
 """
+
 from typing import Union, Optional
 import numpy as np
 import fiona
@@ -1523,10 +1524,9 @@ def trimNoDataExtent(src):
     bands = src.count
     all_data = [src.read(band + 1) for band in range(bands)]
 
-    # Find valid data indices across all bands
-    # valid_mask = np.zeros_like(all_data[0], dtype=bool)
-    # for data in all_data:
-    #     valid_mask |= ~np.isnan(data)  # Update the valid mask
+    # Ensure the mask has at least one dimension
+    if data.mask.ndim == 0:
+        data.mask = np.atleast_1d(data.mask)
 
     # Get the bounding box of valid data
     valid_rows, valid_cols = np.where(~data.mask)
