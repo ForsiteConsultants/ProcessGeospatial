@@ -68,8 +68,13 @@ def arrayToRaster(array: np.ndarray,
     :param dtype: the numpy data type of new raster
     :return: rasterio dataset reader object in r+ mode
     """
-    # Get profile
-    profile = ras_profile
+    # Get profile and verify array shape matches reference raster profile
+    profile = ras_profile.copy()
+
+    # Check if the dimensions match (height, width, bands)
+    required_shape = (profile['count'], profile['height'], profile['width'])
+    if array.shape != required_shape:
+        raise ValueError(f'Array shape {array.shape} does not match required shape {required_shape}')
 
     # Update profile
     profile.update(
