@@ -9,11 +9,10 @@ import os
 import numpy as np
 import json
 import fiona as fio
-from fiona.crs import CRS, from_epsg
-# from fiona import Feature, Geometry
 from shapely.geometry import mapping, shape, Point, box
 from shapely.ops import unary_union
 from pyproj import Transformer
+from pyproj import CRS
 import geopandas as gpd
 import pandas as pd
 from pandas.api.types import infer_dtype
@@ -172,7 +171,7 @@ def bufferPoints(src: fio.Collection,
     :return: fiona collection object in read mode
     """
     # Use the input shapefile's CRS if not provided
-    crs = src.crs if epsg is None else from_epsg(epsg)
+    crs = src.crs if epsg is None else CRS.from_epsg(epsg)
 
     # Define the schema for the output shapefile (Polygon geometry)
     schema = {
@@ -624,7 +623,7 @@ def intersectShapefiles(in_paths: list[str],
                     combined_schema['properties'][field_name] = field_type
 
     # Set output CRS
-    crs = from_epsg(out_crs_epsg) if out_crs_epsg else fio.open(in_paths[0], 'r').crs
+    crs = CRS.from_epsg(out_crs_epsg) if out_crs_epsg else fio.open(in_paths[0], 'r').crs
 
     # Write the intersected output with the combined schema
     with fio.open(out_path, 'w', 'ESRI Shapefile', schema=combined_schema, crs=crs) as output:
