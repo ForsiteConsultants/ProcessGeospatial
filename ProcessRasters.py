@@ -151,9 +151,10 @@ def asciiToTiff(ascii_path: str,
     return rio.open(out_file, 'r+')
 
 
-def calculateStatistics(src: rio.DatasetReader) -> None:
+def calculateStatistics(src: rio.DatasetReader) -> Union[rio.DatasetReader, None]:
     """
     Function to recalculate statistics for each band of a rasterio dataset reader object
+
     :param src: input rasterio dataset reader object in 'r+' mode
     :return: rasterio dataset reader object in 'r+' mode
     """
