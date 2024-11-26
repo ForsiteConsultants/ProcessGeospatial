@@ -4,6 +4,7 @@ Created on Mon Jan 18 13:25:52 2024
 
 @author: Gregory A. Greene
 """
+
 from typing import Union, Optional
 import numpy as np
 import fiona
@@ -67,8 +68,13 @@ def arrayToRaster(array: np.ndarray,
     :param dtype: the numpy data type of new raster
     :return: rasterio dataset reader object in r+ mode
     """
-    # Get profile
-    profile = ras_profile
+    # Get profile and verify array shape matches reference raster profile
+    profile = ras_profile.copy()
+
+    # Check if the dimensions match (height, width, bands)
+    required_shape = (profile['count'], profile['height'], profile['width'])
+    if array.shape != required_shape:
+        raise ValueError(f'Array shape {array.shape} does not match required shape {required_shape}')
 
     # Update profile
     profile.update(
@@ -145,9 +151,10 @@ def asciiToTiff(ascii_path: str,
     return rio.open(out_file, 'r+')
 
 
-def calculateStatistics(src: rio.DatasetReader) -> None:
+def calculateStatistics(src: rio.DatasetReader) -> Union[rio.DatasetReader, None]:
     """
     Function to recalculate statistics for each band of a rasterio dataset reader object
+
     :param src: input rasterio dataset reader object in 'r+' mode
     :return: rasterio dataset reader object in 'r+' mode
     """
@@ -1525,10 +1532,9 @@ def trimNoDataExtent(src):
     bands = src.count
     all_data = [src.read(band + 1) for band in range(bands)]
 
-    # Find valid data indices across all bands
-    # valid_mask = np.zeros_like(all_data[0], dtype=bool)
-    # for data in all_data:
-    #     valid_mask |= ~np.isnan(data)  # Update the valid mask
+    # Ensure the mask has at least one dimension
+    if data.mask.ndim == 0:
+        data.mask = np.atleast_1d(data.mask)
 
     # Get the bounding box of valid data
     valid_rows, valid_cols = np.where(~data.mask)
