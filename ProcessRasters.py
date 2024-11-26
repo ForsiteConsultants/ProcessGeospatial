@@ -1284,7 +1284,9 @@ def resampleRaster(src: rio.DatasetReader,
                    band: int = 1,
                    match_extents: bool = False) -> rio.DatasetReader:
     """
-    Function to resample the resolution of one raster to match that of a reference raster
+    Function to resample the resolution of one raster to match that of a reference raster.
+    This function will also reproject the source projection to match the reference if needed.
+
     :param src: input rasterio dataset reader object
     :param ref_src: reference rasterio dataset reader object
     :param out_file: location and name to save output raster
@@ -1574,8 +1576,8 @@ def trimNoDataExtent(src):
 
 def updateRaster(src: rio.DatasetReader,
                  array: np.ndarray,
-                 band: int = None,
-                 nodata_val: Union[int, float] = None) -> rio.DatasetReader:
+                 band: Optional[int] = None,
+                 nodata_val: Optional[Union[int, float]] = None) -> rio.DatasetReader:
     """
     Function to update values in a raster with an input array
 
@@ -1585,6 +1587,9 @@ def updateRaster(src: rio.DatasetReader,
     :param nodata_val: value to assign as "No Data"
     :return: rasterio dataset reader object in 'r+' mode
     """
+    if array is None or not isinstance(array, np.ndarray):
+        raise ValueError('Input "array" must be a non-empty NumPy array.')
+
     # Get profile of source dataset
     profile = src.profile
 
@@ -1603,11 +1608,8 @@ def updateRaster(src: rio.DatasetReader,
         else:
             dst.write(array)
 
-        # Set the nodata value explicitly in the dataset
         if nodata_val is not None:
             dst.nodata = nodata_val
-
-            # Update the metadata with the new nodata value
             dst.update_tags(nodata=nodata_val)
 
         # Calculate new statistics
