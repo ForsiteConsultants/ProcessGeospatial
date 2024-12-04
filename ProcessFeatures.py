@@ -206,6 +206,82 @@ def bufferPoints(src: fio.Collection,
     return fio.open(out_path, 'r')
 
 
+def bufferFeatures(input_file: str,
+                   output_file: str,
+                   buffer_dist: float,
+                   get_extent: Optional[bool] = False) -> None:
+    """
+    Buffers features in the input geospatial file (shapefile or GeoJSON) by a specified distance and
+    saves the result to a new file. Optionally returns a single feature representing the extent of
+    all buffered features.
+
+    :param input_file: Path to the input geospatial file (shapefile or GeoJSON).
+    :param output_file: Path to save the buffered output file (shapefile or GeoJSON).
+    :param buffer_dist: Buffer distance. Positive for outward buffering, negative for inward buffering.
+    :param get_extent: If True, saves a single feature representing the extent of all buffered features.
+    :return: None
+    """
+    with fio.open(input_file, 'r') as src:
+        # Copy schema and CRS from input file
+        input_schema = src.schema
+        input_crs = src.crs
+
+        # Modify schema for the buffered output
+        output_schema = input_schema.copy()
+        output_schema['geometry'] = 'Polygon'
+
+        # Initialize extent bounds
+        overall_bounds = None
+
+        # Write the buffered features to the output file
+        with fio.open(
+            output_file,
+            'w',
+            driver=src.driver,
+            crs=input_crs,
+            schema=output_schema
+        ) as dst:
+            for feature in src:
+                geom = shape(feature['geometry'])  # Convert to shapely geometry
+                if geom.is_empty or not geom.is_valid:
+                    # Skip empty or invalid geometries
+                    continue
+
+                # Apply buffer
+                buffered_geom = geom.buffer(buffer_dist)
+
+                # Ensure buffered geometry is valid and not empty
+                if buffered_geom.is_valid and not buffered_geom.is_empty:
+                    # Update the overall bounds
+                    minx, miny, maxx, maxy = buffered_geom.bounds
+                    if overall_bounds is None:
+                        overall_bounds = [minx, miny, maxx, maxy]
+                    else:
+                        overall_bounds = [
+                            min(overall_bounds[0], minx),
+                            min(overall_bounds[1], miny),
+                            max(overall_bounds[2], maxx),
+                            max(overall_bounds[3], maxy)
+                        ]
+
+                    # If not calculating extent, save each buffered geometry
+                    if not get_extent:
+                        dst.write({
+                            'geometry': mapping(buffered_geom),  # Convert back to GeoJSON format
+                            'properties': feature['properties']  # Preserve feature properties
+                        })
+
+            # If calculating extent, save a single feature representing the bounding box
+            if get_extent and overall_bounds:
+                extent_geom = box(*overall_bounds)  # Create bounding box polygon
+                dst.write({
+                    'geometry': mapping(extent_geom),
+                    'properties': {}  # Empty properties for the extent feature
+                })
+
+    return
+
+
 def calcGeometryAttributes(
         src_path: str,
         attributes: list[Literal['length', 'area', 'perimeter']],
@@ -508,28 +584,33 @@ def featureClassToShapefile(gdb_path: str,
     return fio.open(shapefile_path, mode='r')
 
 
-def featureExtentToPoly(gdf: gpd.GeoDataFrame,
-                        buffer_size: float) -> gpd.GeoDataFrame:
+def featureExtentToPoly_GDF(gdf: gpd.GeoDataFrame,
+                            buffer_size: float) -> gpd.GeoDataFrame:
     """
-    Function buffers each polygon in the GeoDataFrame by the buffer_size and returns a new GeoDataFrame
-    with polygons representing the extent (bounding box) of the buffered polygons.
+    Buffers each geometry in the GeoDataFrame by the buffer_size and returns a new GeoDataFrame
+    with polygons representing the extent (bounding box) of the buffered geometries.
+
     :param gdf: input GeoDataFrame object
-    :param buffer_size: the buffer size to apply around the polygon
-    :return: a GeoDataFrame with polygons based on the extents (bounding boxes) of the buffered polygons.
+    :param buffer_size: the buffer size to apply around the geometries
+    :return: a GeoDataFrame with polygons based on the extents (bounding boxes) of the buffered geometries.
     """
     if not isinstance(gdf, gpd.GeoDataFrame):
         raise TypeError('The gdf parameter must be a GeoDataFrame data type.')
 
-    # Function to buffer the polygon and get the extent (bounding box)
-    def buffer_and_get_extent(polygon):
-        buffered_polygon = polygon.buffer(buffer_size)
-        minx, miny, maxx, maxy = buffered_polygon.bounds
+    def buffer_and_get_extent(geometry):
+        if geometry.is_empty or not geometry.is_valid:
+            return None
+        buffered = geometry.buffer(buffer_size)
+        minx, miny, maxx, maxy = buffered.bounds
         return box(minx, miny, maxx, maxy)
 
-    # Apply the buffer_and_get_extent function to each geometry in the GeoDataFrame
-    gdf['extent'] = gdf['geometry'].apply(buffer_and_get_extent)
+    # Apply the buffer and extent function to each geometry
+    gdf['extent'] = gdf['geometry'].apply(lambda geom: buffer_and_get_extent(geom) if geom else None)
 
-    # Create a new GeoDataFrame with the extents as geometry
+    # Filter out rows with no valid extent (e.g., empty geometries)
+    gdf = gdf.dropna(subset=['extent'])
+
+    # Create a new GeoDataFrame with extents as geometry
     new_gdf = gpd.GeoDataFrame(gdf.drop(columns='geometry'), geometry='extent', crs=gdf.crs)
 
     return new_gdf
