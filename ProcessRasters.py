@@ -268,20 +268,21 @@ def clipRaster_wShape(src: rio.DatasetReader,
                       select_field: Optional[str] = None,
                       select_value: Optional[Union[any, list[any]]] = None,
                       all_touched: Optional[bool] = True,
-                      crop: Optional[bool] = True) -> rio.DatasetReader:
+                      crop: Optional[bool] = True,
+                      use_extent: Optional[bool] = False) -> rio.DatasetReader:
     """
-    Function to clip a raster with a shapefile
+    Function to clip a raster with a shapefile or its extent.
+
     :param src: input rasterio dataset reader object
     :param shape_path: file path to clip shapefile
     :param out_file: location and name to save output raster
     :param select_field: name of field to use to select specific features for clipping
     :param select_value: value(s) in select_field to use for the feature selection
-    :param all_touched: If True, all cells touching the shapefile boundary are also included in the output.
-        If False, only cells inside the boundary are included. (default = True)
+    :param all_touched: If True, all cells touching the shapefile boundary are included (default = True)
     :param crop: crop output extent to match the extent of the data (default = True)
+    :param use_extent: If True, clip raster using the shapefile's bounding box (default = False)
     :return: rasterio dataset reader object in 'r+' mode
     """
-    # Verify select_field and select_value parameters
     if select_field is not None:
         if not isinstance(select_field, str):
             raise ValueError('Parameter "select_field" must be str type')
@@ -306,15 +307,29 @@ def clipRaster_wShape(src: rio.DatasetReader,
                 ]
             geometries = [feature['geometry'] for feature in filtered_features]
 
-            # Check if any features were found
             if not geometries:
                 raise RuntimeWarning(f'No features found with {select_field} = {select_value}')
         else:
             geometries = [feature['geometry'] for feature in shapefile]
 
+        if use_extent:
+            # Get the bounding box of the shapefile
+            shp_bounds = shapefile.bounds
+            extent_geom = {
+                'type': 'Polygon',
+                'coordinates': [[
+                    [shp_bounds[0], shp_bounds[1]],
+                    [shp_bounds[0], shp_bounds[3]],
+                    [shp_bounds[2], shp_bounds[3]],
+                    [shp_bounds[2], shp_bounds[1]],
+                    [shp_bounds[0], shp_bounds[1]]
+                ]]
+            }
+            geometries = [extent_geom]
+
     # Open the raster file
     with rio.open(src_path) as new_src:
-        # Clip the raster using the geometries
+        # Clip the raster using the geometries or extent
         out_image, out_transform = mask(new_src, geometries, all_touched=all_touched, crop=crop)
         out_meta = new_src.meta.copy()
 
