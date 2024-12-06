@@ -206,8 +206,8 @@ def bufferPoints(src: fio.Collection,
     return fio.open(out_path, 'r')
 
 
-def bufferFeatures(input_file: str,
-                   output_file: str,
+def bufferFeatures(in_path: str,
+                   out_path: str,
                    buffer_dist: float,
                    get_extent: Optional[bool] = False) -> None:
     """
@@ -215,13 +215,13 @@ def bufferFeatures(input_file: str,
     saves the result to a new file. Optionally returns a single feature representing the extent of
     all buffered features.
 
-    :param input_file: Path to the input geospatial file (shapefile or GeoJSON).
-    :param output_file: Path to save the buffered output file (shapefile or GeoJSON).
+    :param in_path: Path to the input geospatial file (shapefile or GeoJSON).
+    :param out_path: Path to save the buffered output file (shapefile or GeoJSON).
     :param buffer_dist: Buffer distance. Positive for outward buffering, negative for inward buffering.
     :param get_extent: If True, saves a single feature representing the extent of all buffered features.
     :return: None
     """
-    with fio.open(input_file, 'r') as src:
+    with fio.open(in_path, 'r') as src:
         # Copy schema and CRS from input file
         input_schema = src.schema
         input_crs = src.crs
@@ -235,7 +235,7 @@ def bufferFeatures(input_file: str,
 
         # Write the buffered features to the output file
         with fio.open(
-            output_file,
+            out_path,
             'w',
             driver=src.driver,
             crs=input_crs,
