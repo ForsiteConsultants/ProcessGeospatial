@@ -1162,36 +1162,41 @@ def matchTopLeftCoord(src: rio.DatasetReader,
     return src
 
 
-def mosaicRasters(mosaic_list: list[Union[str, rio.DatasetReader]],
-                  out_file: str) -> rio.DatasetReader:
+def mosaicRasters(mosaic_list: list[Union[str, rio.DatasetReader]], out_file: str) -> rio.DatasetReader:
     """
-    Function mosaics a list of rasterio objects to a new TIFF raster
-    :param mosaic_list: list of rasterio Dataset objects, or paths to raster datasets
-    :param out_file: location and name to save output raster
-    :return: rasterio dataset reader object in 'r+' mode
+    Function mosaics a list of rasterio objects to a new TIFF raster.
+    :param mosaic_list: List of paths to raster datasets or rasterio Dataset objects.
+    :param out_file: Location and name to save the output raster.
+    :return: rasterio dataset reader object in 'r+' mode.
     """
+    # Open files as rasterio objects if they are paths
+    datasets = []
     for data in mosaic_list:
         if isinstance(data, str):
-            mosaic_list.extend([rio.open(data)])
+            datasets.append(rio.open(data))
         else:
-            break
+            datasets.append(data)
 
-    mosaic, output = merge(mosaic_list)
+    # Merge datasets
+    mosaic, transform = merge(datasets)
 
-    out_meta = mosaic_list[0].meta
-    out_meta.update(
-        {
-            'driver': 'GTiff',
-            'height': mosaic.shape[1],
-            'width': mosaic.shape[2],
-            'transform': output
-        }
-    )
+    # Update metadata
+    out_meta = datasets[0].meta.copy()
+    out_meta.update({
+        'driver': 'GTiff',
+        'height': mosaic.shape[1],
+        'width': mosaic.shape[2],
+        'transform': transform,
+        'count': mosaic.shape[0]  # Update the band count
+    })
 
+    # Write the output file
     with rio.open(out_file, 'w', **out_meta) as dst:
         dst.write(mosaic)
-        # Calculate new statistics
-        calculateStatistics(dst)
+
+    # Close all input datasets
+    for ds in datasets:
+        ds.close()
 
     return rio.open(out_file, 'r+')
 
