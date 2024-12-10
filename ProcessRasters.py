@@ -1162,7 +1162,7 @@ def matchTopLeftCoord(src: rio.DatasetReader,
     return src
 
 
-def mosaicRasters(mosaic_list: list[str, rio.DatasetReader],
+def mosaicRasters(mosaic_list: list[Union[str, rio.DatasetReader]],
                   out_file: str) -> rio.DatasetReader:
     """
     Function mosaics a list of rasterio objects to a new TIFF raster
