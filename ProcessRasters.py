@@ -9,8 +9,6 @@ from typing import Union, Optional
 import numpy as np
 import fiona
 import pandas as pd
-import pyproj as pp
-from osgeo import gdal
 import geopandas as gpd
 from geopandas import GeoDataFrame
 import rasterio as rio
@@ -23,7 +21,8 @@ from rasterio.warp import calculate_default_transform, reproject, Resampling
 # from rasterio.windows import Window
 # from rasterio.windows import Window
 # from rasterio.io import MemoryFile
-# from rasterio.transform import Affine
+from rasterio.transform import Affine
+from pyproj import Transformer
 from shapely.geometry import Point, box, shape, mapping
 from shapely.affinity import translate
 from joblib import Parallel, delayed
@@ -34,11 +33,28 @@ except ImportError:
     import shutil
 
 
+def _calculate_cosine_incidence(slope, aspect, zenith, azimuth):
+    """
+    Calculate the cosine of the solar incidence angle.
+
+    :param slope: Slope in radians.
+    :param aspect: Aspect in radians.
+    :param zenith: Solar zenith angle in radians.
+    :param azimuth: Solar azimuth angle in radians.
+    :return: Cosine of the solar incidence angle.
+    """
+    return (
+        np.sin(zenith) * np.cos(slope)
+        + np.cos(zenith) * np.sin(slope) * np.cos(azimuth - aspect)
+    )
+
+
 def _process_block(block: np.ndarray,
                    transform: rio.io.DatasetReaderBase,
                    window: rio.io.WindowMethodsMixin) -> list:
     """
     Process a block of the raster array and return shapes
+
     :param block:
     :param transform:
     :param window:
@@ -150,6 +166,93 @@ def asciiToTiff(ascii_path: str,
         dst.write(data, 1)
 
     return rio.open(out_file, 'r+')
+
+
+def calcSolarRadiation(
+    slope: np.ndarray,
+    aspect: np.ndarray,
+    elevation: np.ndarray,
+    lat: float,
+    lon: float,
+    start_date: str,
+    end_date: str,
+    out_file: str,
+    transform: Affine,
+    time_step: int = 60,
+    nodata: float = -9999
+):
+    """
+    Calculate solar radiation using pvlib for a given raster grid.
+    <<<<NOTE: THIS IS EXPERIMENTAL & UNTESTED>>>>
+
+    :param slope: Slope array (degrees).
+    :param aspect: Aspect array (degrees, clockwise from north).
+    :param elevation: Elevation array (meters).
+    :param lat: Latitude of the raster's region (degrees).
+    :param lon: Longitude of the raster's region (degrees).
+    :param start_date: Start date in 'YYYY-MM-DD' format.
+    :param end_date: End date in 'YYYY-MM-DD' format.
+    :param out_file: Path to save the solar radiation raster.
+    :param transform: GeoTransform for spatial reference.
+    :param time_step: Time step in minutes for radiation simulation (default 60).
+    :param nodata: Nodata value for the input arrays (default -9999).
+    :return: Path to the output solar radiation raster.
+    """
+    import pvlib
+
+    # Mask nodata values
+    elevation = np.ma.masked_equal(elevation, nodata)
+    slope = np.ma.masked_equal(slope, nodata)
+    aspect = np.ma.masked_equal(aspect, nodata)
+
+    # Generate a time range
+    times = pd.date_range(start=start_date, end=end_date, freq=f'{time_step}T', tz='UTC')
+
+    # Precompute solar radiation components
+    solar_radiation = np.zeros(elevation.shape, dtype=np.float32)
+
+    for current_time in times:
+        # Get solar position
+        solar_position = pvlib.solarposition.get_solarposition(current_time, lat, lon, elevation.mean())
+        zenith = np.radians(solar_position['apparent_zenith'])
+        azimuth = np.radians(solar_position['azimuth'])
+
+        # Calculate the cosine of the solar incidence angle
+        cos_incidence = _calculate_cosine_incidence(np.radians(slope), np.radians(aspect), zenith, azimuth)
+
+        # Ignore night times (zenith > 90°)
+        cos_incidence[zenith > np.pi / 2] = 0
+
+        # Estimate direct normal irradiance (DNI)
+        clearsky = pvlib.clearsky.ineichen(solar_position['apparent_zenith'], altitude=elevation.mean())
+        dni = clearsky['dni'].values
+
+        # Calculate solar radiation
+        direct_radiation = dni[:, None, None] * cos_incidence
+        diffuse_radiation = 0.3 * direct_radiation  # Estimate diffuse as 30% of direct
+
+        # Accumulate radiation over time
+        solar_radiation += np.clip(direct_radiation + diffuse_radiation, 0, None)
+
+    # Normalize by time range to get average radiation
+    solar_radiation /= len(times)
+
+    # Save the output raster
+    profile = {
+        'driver': 'GTiff',
+        'dtype': rio.float32,
+        'nodata': nodata,
+        'width': elevation.shape[1],
+        'height': elevation.shape[0],
+        'count': 1,
+        'crs': 'EPSG:4326',  # Assuming lat/lon input
+        'transform': transform,
+    }
+
+    with rio.open(out_file, 'w', **profile) as dst:
+        dst.write(solar_radiation.astype(rio.float32), 1)
+
+    return out_file
 
 
 def calculateStatistics(src: rio.DatasetReader) -> Union[rio.DatasetReader, None]:
@@ -351,14 +454,31 @@ def clipRaster_wShape(src: rio.DatasetReader,
 
 
 def copyRaster(src: rio.DatasetReader,
-               out_file: str) -> rio.DatasetReader:
+               out_file: str,
+               band: int = None) -> rio.DatasetReader:
     """
-    Function to copy a raster to a new location
+    Function to copy a raster to a new location or export a specific band
     :param src: input rasterio dataset reader object
     :param out_file: location and name to save output raster
+    :param band: specific band number to export (1-based index), optional
     :return: rasterio dataset reader object in 'r+' mode
     """
-    shutil.copyfiles(src.name, out_file)
+    if band is not None:
+        # Validate band number
+        if band < 1 or band > src.count:
+            raise ValueError(f'Band number {band} is out of range. Source has {src.count} bands.')
+
+        # Read the specific band
+        band_data = src.read(band)
+
+        # Create a new raster file with the selected band
+        profile = src.profile
+        profile.update(count=1)  # Set the number of bands to 1
+        with rio.open(out_file, 'w', **profile) as dst:
+            dst.write(band_data, 1)
+    else:
+        shutil.copyfile(src.name, out_file)
+
     return rio.open(out_file, 'r+')
 
 
@@ -619,6 +739,8 @@ def getAspect(src: rio.DatasetReader,
     :param out_file: the path and name of the output file
     :return: rasterio dataset reader object in r+ mode
     """
+    from osgeo import gdal
+
     # Enable exceptions in GDAL to handle potential errors
     gdal.UseExceptions()
 
@@ -713,7 +835,7 @@ def getGridCoordinates(src: rio.DatasetReader,
     pixel_size_y = (y_end - y_start) / rows
 
     # Create a new affine transformation matrix for EPSG:4326
-    transformer = pp.Transformer.from_crs(src_crs, out_crs, always_xy=True)
+    transformer = Transformer.from_crs(src_crs, out_crs, always_xy=True)
 
     # Calculate the x & y coordinates for each cell
     x_coords = np.linspace(x_start + pixel_size_x / 2, x_end - pixel_size_x / 2, cols)
@@ -750,6 +872,8 @@ def getHillshade(src: rio.DatasetReader,
     :param out_file: the path and name of the output file
     :return: rasterio dataset reader object
     """
+    from osgeo import gdal
+
     # Get file path of dataset object
     src_path = src.name
 
@@ -878,23 +1002,6 @@ def getResolution(src: rio.DatasetReader) -> tuple:
     return src.res
 
 
-def setNull(src_path: str, nodata_val: Union[int, float]) -> None:
-    """
-    Function to set a new nodata value in an existing raster dataset.
-
-    :param src_path: Path to the raster dataset (TIFF only)
-    :param nodata_val: New nodata value to set in the dataset
-    """
-    # Open the dataset in 'r+' mode to allow modifications
-    with rio.open(src_path, 'r+') as dst:
-        # Set the nodata value in the dataset
-        dst.nodata = nodata_val
-        # Update the metadata with the new nodata value
-        dst.update_tags(nodata=nodata_val)
-
-    return
-
-
 def getSlope(src: rio.DatasetReader,
              out_file: str,
              slope_format: str) -> rio.DatasetReader:
@@ -905,6 +1012,8 @@ def getSlope(src: rio.DatasetReader,
     :param slope_format: slope format ("degree" or "percent")
     :return: rasterio dataset reader object in 'r+' mode
     """
+    from osgeo import gdal
+
     # Enable exceptions in GDAL to handle potential errors
     gdal.UseExceptions()
 
@@ -1053,36 +1162,41 @@ def matchTopLeftCoord(src: rio.DatasetReader,
     return src
 
 
-def mosaicRasters(mosaic_list: list[str, rio.DatasetReader],
-                  out_file: str) -> rio.DatasetReader:
+def mosaicRasters(mosaic_list: list[Union[str, rio.DatasetReader]], out_file: str) -> rio.DatasetReader:
     """
-    Function mosaics a list of rasterio objects to a new TIFF raster
-    :param mosaic_list: list of rasterio Dataset objects, or paths to raster datasets
-    :param out_file: location and name to save output raster
-    :return: rasterio dataset reader object in 'r+' mode
+    Function mosaics a list of rasterio objects to a new TIFF raster.
+    :param mosaic_list: List of paths to raster datasets or rasterio Dataset objects.
+    :param out_file: Location and name to save the output raster.
+    :return: rasterio dataset reader object in 'r+' mode.
     """
+    # Open files as rasterio objects if they are paths
+    datasets = []
     for data in mosaic_list:
         if isinstance(data, str):
-            mosaic_list.extend([rio.open(data)])
+            datasets.append(rio.open(data))
         else:
-            break
+            datasets.append(data)
 
-    mosaic, output = merge(mosaic_list)
+    # Merge datasets
+    mosaic, transform = merge(datasets)
 
-    out_meta = mosaic_list[0].meta
-    out_meta.update(
-        {
-            'driver': 'GTiff',
-            'height': mosaic.shape[1],
-            'width': mosaic.shape[2],
-            'transform': output
-        }
-    )
+    # Update metadata
+    out_meta = datasets[0].meta.copy()
+    out_meta.update({
+        'driver': 'GTiff',
+        'height': mosaic.shape[1],
+        'width': mosaic.shape[2],
+        'transform': transform,
+        'count': mosaic.shape[0]  # Update the band count
+    })
 
+    # Write the output file
     with rio.open(out_file, 'w', **out_meta) as dst:
         dst.write(mosaic)
-        # Calculate new statistics
-        calculateStatistics(dst)
+
+    # Close all input datasets
+    for ds in datasets:
+        ds.close()
 
     return rio.open(out_file, 'r+')
 
@@ -1433,6 +1547,23 @@ def samplePointsFromProbDensRaster(src: rio.DatasetReader,
         gdf.to_file(out_file, driver='GPKG')
     else:
         raise ValueError('Unsupported output format. Use .shp or .gpkg.')
+
+    return
+
+
+def setNull(src_path: str, nodata_val: Union[int, float]) -> None:
+    """
+    Function to set a new nodata value in an existing raster dataset.
+
+    :param src_path: Path to the raster dataset (TIFF only)
+    :param nodata_val: New nodata value to set in the dataset
+    """
+    # Open the dataset in 'r+' mode to allow modifications
+    with rio.open(src_path, 'r+') as dst:
+        # Set the nodata value in the dataset
+        dst.nodata = nodata_val
+        # Update the metadata with the new nodata value
+        dst.update_tags(nodata=nodata_val)
 
     return
 
