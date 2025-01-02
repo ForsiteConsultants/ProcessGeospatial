@@ -1436,8 +1436,8 @@ def resampleRaster(src: rio.DatasetReader,
     ref_height = ref_src.height
     ref_crs = ref_src.crs
 
-    # Prepare the metadata for the output
-    out_meta = ref_src.meta.copy()
+    # Prepare the profile for the output
+    profile = ref_src.profile
 
     # Read and resample the source raster data
     src_transform = src.transform
@@ -1474,7 +1474,7 @@ def resampleRaster(src: rio.DatasetReader,
         )
 
     # Update the metadata with new dimensions and transform
-    out_meta.update(
+    profile.update(
         {
             'height': ref_height,
             'width': ref_width,
@@ -1483,7 +1483,7 @@ def resampleRaster(src: rio.DatasetReader,
     )
 
     # Write the resampled data to a new raster file
-    with rio.open(out_file, 'w', **out_meta) as dst:
+    with rio.open(out_file, 'w', **profile) as dst:
         dst.write(out_array, 1)
 
     return rio.open(out_file, 'r+')
