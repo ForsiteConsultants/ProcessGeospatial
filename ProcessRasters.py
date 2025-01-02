@@ -76,7 +76,8 @@ def arrayToRaster(array: np.ndarray,
                   nodata_val: Optional[Union[int, float]] = None,
                   dtype: np.dtype = np.float32) -> rio.DatasetReader:
     """
-    Function to convert a numpy array to a raster
+    Function to convert a numpy array to a raster.
+
     :param array: input numpy array
     :param out_file: path (with name) to save output raster
     :param ras_profile: profile of reference rasterio dataset reader object
@@ -277,8 +278,7 @@ def calculateStatistics(src: rio.DatasetReader) -> Union[rio.DatasetReader, None
             src.update_tags(band, **stats_dict)
 
         return src
-    except:
-
+    except Exception:
         for bidx in src.indexes:
             try:
                 src.statistics(bidx, clear_cache=True)
@@ -1769,7 +1769,6 @@ def updateRaster(src: rio.DatasetReader,
 
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(src_path, 'r+')
-
 
 # STILL WORKING ON THIS FUNCTION
 # def updateLargeRas_wSmallRas(src_lrg, src_small, nodata_val=None):
