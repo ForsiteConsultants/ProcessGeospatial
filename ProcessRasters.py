@@ -18,8 +18,7 @@ from rasterio.features import shapes, geometry_window, geometry_mask, rasterize
 from rasterio.merge import merge
 from rasterio.transform import xy, from_origin, from_bounds
 from rasterio.warp import calculate_default_transform, reproject, Resampling
-# from rasterio.windows import Window
-# from rasterio.windows import Window
+from rasterio.windows import Window
 # from rasterio.io import MemoryFile
 from rasterio.transform import Affine
 from pyproj import Transformer
@@ -759,6 +758,20 @@ def getAspect(src: rio.DatasetReader,
     return rio.open(out_file, 'r+')
 
 
+def getExtentAsWindow(src: rio.DatasetReader) -> Window:
+    """
+    Get the extent of a raster dataset as a rasterio Window object.
+
+    :param src: The raster dataset opened as a rasterio DatasetReader.
+    :return: A Window object representing the full extent of the raster in pixel coordinates.
+    """
+    # Get the width and height of the raster
+    width = src.width
+    height = src.height
+
+    return Window(col_off=0, row_off=0, width=width, height=height)
+
+
 def getFirstLast(in_rasters: list[rio.DatasetReader],
                  out_file: str,
                  first_last: str,
@@ -1491,8 +1504,9 @@ def resampleRaster(src: rio.DatasetReader,
 
 def samplePointsFromProbDensRaster(src: rio.DatasetReader,
                                    num_points: int,
-                                   out_file: str,
-                                   normalize_data: bool = False) -> None:
+                                   out_file: str = None,
+                                   normalize_data: bool = False,
+                                   random_seed: Union[None, int] = None) -> Union[None, gpd.GeoDataFrame]:
     """
     Function to sample points from a probability density raster.
 
@@ -1502,15 +1516,19 @@ def samplePointsFromProbDensRaster(src: rio.DatasetReader,
 
     :param src: input rasterio dataset reader object with a single band of data
     :param num_points: number of points to sample
-    :param out_file: path to save the output shapefile or GeoPackage (.shp or .gpkg)
-    :param normalize_data: switch to normalize the data if it hasn't already been normalized
-    :return: None
+    :param out_file: path to save the output shapefile or GeoPackage (.shp or .gpkg).
+        If out_file is None, a Geopandas GeoDataFrame of the points is returned
+    :param normalize_data: switch to normalize the probability data if it hasn't already been normalized
+    :return: Either None or a Geopandas GeoDataFrame of the resulting points.
     """
     # Read the raster values into a numpy array
     raster_array = src.read(1)
 
     # Mask out invalid (NaN) values
     raster_array = np.ma.masked_invalid(raster_array)
+
+    # Mask values < 0 or > 100
+    raster_array = np.ma.masked_where((raster_array < 0) | (raster_array > 100), raster_array)
 
     # Get the affine transformation to convert pixel indices to coordinates
     transform = src.transform
@@ -1525,8 +1543,9 @@ def samplePointsFromProbDensRaster(src: rio.DatasetReader,
     valid_indices = np.argwhere(~raster_array.mask)
 
     # Randomly sample indices based on probabilities
+    if random_seed is not None:
+        np.random.seed(random_seed)
     sampled_indices = np.random.choice(range(len(probabilities)), size=num_points, replace=True, p=probabilities)
-    # sampled_indices = random.choices(range(len(probabilities)), weights=probabilities, k=num_points)
 
     # Convert sampled indices back to row, col coordinates
     sampled_coords = valid_indices[sampled_indices]
@@ -1541,7 +1560,9 @@ def samplePointsFromProbDensRaster(src: rio.DatasetReader,
     gdf = gpd.GeoDataFrame(geometry=sampled_points, crs=raster_crs)
 
     # Save the result to a shapefile or GeoPackage based on the output extension
-    if out_file.endswith('.shp'):
+    if out_file is None:
+        return gdf
+    elif out_file.endswith('.shp'):
         gdf.to_file(out_file)
     elif out_file.endswith('.gpkg'):
         gdf.to_file(out_file, driver='GPKG')
