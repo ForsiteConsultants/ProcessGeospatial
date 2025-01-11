@@ -274,9 +274,13 @@ def bufferFeatures(in_path: str,
             # If calculating extent, save a single feature representing the bounding box
             if get_extent and overall_bounds:
                 extent_geom = box(*overall_bounds)  # Create bounding box polygon
+
+                # Ensure properties match the schema
+                extent_properties = {key: None for key in output_schema['properties'].keys()}
+
                 dst.write({
                     'geometry': mapping(extent_geom),
-                    'properties': {}  # Empty properties for the extent feature
+                    'properties': extent_properties  # Match schema properties
                 })
 
     return
