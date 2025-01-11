@@ -5,7 +5,7 @@ Created on Mon Jan 18 13:25:52 2024
 @author: Gregory A. Greene
 """
 
-from typing import Union, Optional
+import os
 import numpy as np
 import fiona
 import pandas as pd
@@ -16,7 +16,7 @@ from rasterio.mask import mask
 # from rasterio import CRS
 from rasterio.features import shapes, geometry_window, geometry_mask, rasterize
 from rasterio.merge import merge
-from rasterio.transform import xy, from_origin, from_bounds
+from rasterio.transform import xy, from_origin, from_bounds, rowcol
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 from rasterio.windows import Window
 # from rasterio.io import MemoryFile
@@ -25,6 +25,7 @@ from pyproj import Transformer
 from shapely.geometry import Point, box, shape, mapping
 from shapely.affinity import translate
 from joblib import Parallel, delayed
+from typing import Union, Optional
 
 try:
     from rasterio import shutil
@@ -476,7 +477,13 @@ def copyRaster(src: rio.DatasetReader,
         with rio.open(out_file, 'w', **profile) as dst:
             dst.write(band_data, 1)
     else:
-        shutil.copyfile(src.name, out_file)
+        try:
+            shutil.copyfiles(src.name, out_file)
+        except AttributeError:
+            try:
+                shutil.copyfile(src.name, out_file)
+            except AttributeError:
+                raise RuntimeError('Unable to copy file. Both shutil and raster.shutil methods failed.')
 
     return rio.open(out_file, 'r+')
 
@@ -758,20 +765,6 @@ def getAspect(src: rio.DatasetReader,
     return rio.open(out_file, 'r+')
 
 
-def getExtentAsWindow(src: rio.DatasetReader) -> Window:
-    """
-    Get the extent of a raster dataset as a rasterio Window object.
-
-    :param src: The raster dataset opened as a rasterio DatasetReader.
-    :return: A Window object representing the full extent of the raster in pixel coordinates.
-    """
-    # Get the width and height of the raster
-    width = src.width
-    height = src.height
-
-    return Window(col_off=0, row_off=0, width=width, height=height)
-
-
 def getFirstLast(in_rasters: list[rio.DatasetReader],
                  out_file: str,
                  first_last: str,
@@ -997,6 +990,38 @@ def getMinMax(in_rasters: Union[list[str], list[rio.DatasetReader]],
     return rio.open(out_file, 'r+')
 
 
+def getOverlapWindow(large_src, small_src):
+    """
+    Generate a rasterio window from the overlap of a smaller raster with a larger raster.
+
+    :param large_src: A rasterio.DatasetReader object for the larger raster.
+    :param small_src: A rasterio.DatasetReader object for the smaller raster.
+    :return: A rasterio Window object representing the overlapping region.
+    """
+    # Extract the bounds of the smaller raster
+    small_bounds = small_src.bounds
+    min_x, min_y, max_x, max_y = small_bounds.left, small_bounds.bottom, small_bounds.right, small_bounds.top
+
+    # Ensure valid extents
+    min_x, max_x = sorted([min_x, max_x])
+    min_y, max_y = sorted([min_y, max_y])
+
+    # Convert the smaller raster's bounds to grid coordinates in the larger raster
+    min_col, max_row = rowcol(large_src.transform, min_x, min_y)  # Bottom-left corner
+    max_col, min_row = rowcol(large_src.transform, max_x, max_y)  # Top-right corner
+
+    # Clip to the bounds of the larger raster
+    min_row = max(0, min_row)
+    min_col = max(0, min_col)
+    max_row = min(large_src.height, max_row)
+    max_col = min(large_src.width, max_col)
+
+    # Create a window for rasterio to subset data
+    window = Window.from_slices((min_row, max_row), (min_col, max_col))
+
+    return window
+
+
 def getRaster(in_path: str) -> rio.DatasetReader:
     """
     Function to get a rasterio dataset reader object from a raster file path
@@ -1102,47 +1127,76 @@ def matchExtents(src: rio.DatasetReader,
                  match_res: bool = False) -> rio.DatasetReader:
     """
     Match the extent of the source raster to the target raster.
-    :param src: source rasterio dataset reader object to alter
-    :param ref_src: rasterio dataset reader object to use as reference
-    :param out_file: path to save the output raster with matched extent
-    :param match_res: if True, match the reference resolution,
-        if False, retain the source resolution.
-    :return: rasterio dataset reader object in 'r+' mode
     """
-    # Calculate transform, width, and height of the new raster based on match_res
-    if match_res:
-        # Match reference resolution
-        transform, width, height = calculate_default_transform(
-            src.crs, ref_src.crs, ref_src.width, ref_src.height, *ref_src.bounds
-        )
-    else:
-        # Retain source resolution
-        transform, width, height = calculate_default_transform(
-            src.crs, ref_src.crs, src.width, src.height, *ref_src.bounds
-        )
+    # Check if extents and resolution already match
+    if (src.bounds == ref_src.bounds and
+            src.width == ref_src.width and
+            src.height == ref_src.height and
+            src.crs == ref_src.crs):
+        return src
 
-    # Update the metadata of the output raster to match the reference
+    # Extract metadata from src
+    src_transform = src.transform
+    src_crs = src.crs
+    src_res_x, src_res_y = src_transform.a, -src_transform.e
+    src_count = src.count
+    src_dtype = src.read(1).dtype
+
+    # Extract metadata from ref_src
+    ref_transform = ref_src.transform
+    ref_crs = ref_src.crs
+    ref_bounds = ref_src.bounds
+
+    # Determine the new resolution and bounds
+    if match_res:
+        # Match both resolution and extent
+        new_transform = ref_transform
+        new_width, new_height = ref_src.width, ref_src.height
+    else:
+        # Retain source resolution, adjust extent
+        new_res_x, new_res_y = src_res_x, src_res_y
+        new_width = round((ref_bounds.right - ref_bounds.left) / new_res_x)
+        new_height = round((ref_bounds.top - ref_bounds.bottom) / new_res_y)
+        new_transform = Affine(new_res_x, 0, ref_bounds.left, 0, -new_res_y, ref_bounds.top)
+
+    # Prepare metadata for the new raster
     dest_meta = src.meta.copy()
     dest_meta.update({
-        'crs': ref_src.crs,
-        'transform': transform,
-        'width': width,
-        'height': height
+        'crs': ref_crs,
+        'transform': new_transform,
+        'width': new_width,
+        'height': new_height,
+        'nodata': src.meta.get('nodata', -9999)  # Ensure nodata is explicitly set
     })
 
-    # Open the output raster for writing
-    with rio.open(out_file, 'w', **dest_meta) as dest:
-        # Reproject the source raster into the target's extent and resolution
-        for i in range(1, src.count + 1):
+    # Create a temporary file if src == out_file
+    if src.name == out_file:
+        temp_file = out_file.replace('.tif', '_.tif')
+    else:
+        temp_file = out_file
+
+    # Write the new raster to the temporary file
+    with rio.open(temp_file, 'w', **dest_meta) as dest:
+        for i in range(1, src_count + 1):
+            destination_array = np.full((new_height, new_width), dest_meta['nodata'], dtype=src_dtype)
             reproject(
                 source=rio.band(src, i),
-                destination=rio.band(dest, i),
-                src_transform=src.transform,
-                src_crs=src.crs,
-                dst_transform=transform,
-                dst_crs=ref_src.crs,
-                resampling=Resampling.nearest
+                destination=destination_array,
+                src_transform=src_transform,
+                src_crs=src_crs,
+                dst_transform=new_transform,
+                dst_crs=ref_crs,
+                dst_width=new_width,
+                dst_height=new_height,
+                resampling=Resampling.nearest,
+                dst_nodata=dest_meta['nodata']
             )
+            dest.write(destination_array, i)
+
+    # If using a temporary file, replace the original file
+    if src.name == out_file:
+        src.close()  # Ensure the source file is closed
+        os.replace(temp_file, out_file)  # Replace the original file with the temporary file
 
     return rio.open(out_file, 'r+')
 
@@ -1175,11 +1229,17 @@ def matchTopLeftCoord(src: rio.DatasetReader,
     return src
 
 
-def mosaicRasters(mosaic_list: list[Union[str, rio.DatasetReader]], out_file: str) -> rio.DatasetReader:
+def mosaicRasters(mosaic_list: list[Union[str, rio.DatasetReader]],
+                  out_file: str,
+                  extent_mode: str = 'union') -> rio.DatasetReader:
     """
-    Function mosaics a list of rasterio objects to a new TIFF raster.
+    Function mosaics a list of rasterio objects to a new TIFF raster or updates an existing raster if specified.
     :param mosaic_list: List of paths to raster datasets or rasterio Dataset objects.
     :param out_file: Location and name to save the output raster.
+    :param extent_mode: Determines the extent of the mosaic:
+                        - 'union': Uses the union of all input extents (default).
+                        - 'max': Uses the total merged extent that encompasses all extents, including nodata areas.
+                        - 'trim': Minimizes the extent to match the data (trims nodata areas).
     :return: rasterio dataset reader object in 'r+' mode.
     """
     # Open files as rasterio objects if they are paths
@@ -1190,26 +1250,76 @@ def mosaicRasters(mosaic_list: list[Union[str, rio.DatasetReader]], out_file: st
         else:
             datasets.append(data)
 
-    # Merge datasets
-    mosaic, transform = merge(datasets)
+    # Initialize bounds and resolution variables
+    max_bounds = None
+    resolution = None
 
-    # Update metadata
+    for dataset in datasets:
+        # Update the overall bounds
+        bounds = dataset.bounds
+        if max_bounds is None:
+            max_bounds = bounds
+        else:
+            max_bounds = (
+                min(max_bounds[0], bounds[0]),  # minX
+                min(max_bounds[1], bounds[1]),  # minY
+                max(max_bounds[2], bounds[2]),  # maxX
+                max(max_bounds[3], bounds[3])  # maxY
+            )
+
+        # Check and set resolution
+        res = dataset.res
+        if resolution is None:
+            resolution = res
+        elif res != resolution:
+            raise ValueError("All input rasters must have the same resolution for 'max' mode.")
+
+    # Calculate bounds based on the extent_mode
+    if extent_mode == "union":
+        # Default merge behavior (union of extents)
+        mosaic, transform = merge(datasets)
+    elif extent_mode == "max":
+        # Explicitly set bounds to max_bounds
+        mosaic, transform = merge(datasets, bounds=max_bounds, res=resolution)
+    elif extent_mode == "trim":
+        # Trim to valid data bounds (calculated in the previous implementation)
+        valid_bounds = None
+        for dataset in datasets:
+            data = dataset.read(1, masked=True)  # Read as masked array
+            bounds = rio.windows.bounds(
+                rio.features.geometry_window(dataset, [rio.features.shapes(data, transform=dataset.transform)])
+            )
+            if valid_bounds is None:
+                valid_bounds = bounds
+            else:
+                valid_bounds = (
+                    min(valid_bounds[0], bounds[0]),
+                    min(valid_bounds[1], bounds[1]),
+                    max(valid_bounds[2], bounds[2]),
+                    max(valid_bounds[3], bounds[3]),
+                )
+        mosaic, transform = merge(datasets, bounds=valid_bounds, res=resolution)
+    else:
+        raise ValueError(f"Invalid extent_mode '{extent_mode}'. Choose from 'union', 'max', or 'trim'.")
+
+    # Update metadata based on the mosaic
     out_meta = datasets[0].meta.copy()
     out_meta.update({
         'driver': 'GTiff',
         'height': mosaic.shape[1],
         'width': mosaic.shape[2],
         'transform': transform,
-        'count': mosaic.shape[0]  # Update the band count
+        'count': mosaic.shape[0]
     })
 
-    # Write the output file
+    # Close all datasets
+    for ds in datasets:
+        if ds.name == out_file:
+            ds.close()
+
+    # Write to the output file
     with rio.open(out_file, 'w', **out_meta) as dst:
         dst.write(mosaic)
-
-    # Close all input datasets
-    for ds in datasets:
-        ds.close()
 
     return rio.open(out_file, 'r+')
 
@@ -1430,7 +1540,7 @@ def reprojRaster(src: rio.DatasetReader,
 def resampleRaster(src: rio.DatasetReader,
                    ref_src: rio.DatasetReader,
                    out_file: str,
-                   band: int = 1,
+                   num_bands: int = 1,
                    match_extents: bool = False) -> rio.DatasetReader:
     """
     Function to resample the resolution of one raster to match that of a reference raster.
@@ -1439,7 +1549,7 @@ def resampleRaster(src: rio.DatasetReader,
     :param src: input rasterio dataset reader object
     :param ref_src: reference rasterio dataset reader object
     :param out_file: location and name to save output raster
-    :param band: integer representing a specific band to extract points from (default = 1)
+    :param num_bands: number of bands in the output dataset (default = 1)
     :param match_extents: if True, extents of the ref and src rasters will be matched
     :return: rasterio dataset reader object in 'r+' mode
     """
@@ -1451,53 +1561,58 @@ def resampleRaster(src: rio.DatasetReader,
 
     # Prepare the profile for the output
     profile = ref_src.profile
-
-    # Read and resample the source raster data
-    src_transform = src.transform
-    src_crs = src.crs
-
-    # Prepare the destination array
-    out_array = np.empty((ref_height, ref_width), dtype=src.read(1).dtype)
-
-    # If match_extents is True, match the extents of the reference raster
-    if match_extents:
-        ref_bounds = ref_src.bounds
-        reproject(
-            source=src.read(band),
-            destination=out_array,
-            src_transform=src_transform,
-            src_crs=src_crs,
-            dst_transform=ref_transform,
-            dst_crs=ref_crs,
-            dst_width=ref_width,
-            dst_height=ref_height,
-            dst_bounds=ref_bounds,  # Ensure that the destination matches the reference extent
-            resampling=Resampling.nearest
-        )
-    else:
-        # Reproject to match resolution but maintain the source extent
-        reproject(
-            source=src.read(band),
-            destination=out_array,
-            src_transform=src_transform,
-            src_crs=src_crs,
-            dst_transform=ref_transform,
-            dst_crs=ref_crs,
-            resampling=Resampling.nearest
-        )
-
-    # Update the metadata with new dimensions and transform
+    nodata_val = profile.get('nodata', -9999)  # Default nodata value if not specified
     profile.update(
         {
+            'count': num_bands,  # Number of bands
             'height': ref_height,
             'width': ref_width,
-            'transform': ref_transform
+            'transform': ref_transform,
+            'nodata': nodata_val,  # Ensure nodata is explicitly set
         }
     )
 
+    # Prepare the output arrays for all bands
+    out_arrays = [
+        np.full((ref_height, ref_width), nodata_val, dtype=src.read(1).dtype) for _ in range(num_bands)
+    ]
+
+    # Loop over each band and resample
+    for b in range(1, num_bands + 1):
+        src_data = src.read(b)
+        # Replace invalid values in the source data
+        src_data = np.where(~np.isfinite(src_data), nodata_val, src_data)
+
+        if match_extents:
+            ref_bounds = ref_src.bounds
+            reproject(
+                source=src_data,
+                destination=out_arrays[b - 1],
+                src_transform=src.transform,
+                src_crs=src.crs,
+                dst_transform=ref_transform,
+                dst_crs=ref_crs,
+                dst_width=ref_width,
+                dst_height=ref_height,
+                dst_bounds=ref_bounds,  # Ensure that the destination matches the reference extent
+                resampling=Resampling.nearest
+            )
+        else:
+            # Reproject to match resolution but maintain the source extent
+            reproject(
+                source=src_data,
+                destination=out_arrays[b - 1],
+                src_transform=src.transform,
+                src_crs=src.crs,
+                dst_transform=ref_transform,
+                dst_crs=ref_crs,
+                resampling=Resampling.nearest
+            )
+
     # Write the resampled data to a new raster file
     with rio.open(out_file, 'w', **profile) as dst:
-        dst.write(out_array, 1)
+        for b in range(1, num_bands + 1):
+            dst.write(out_arrays[b - 1], b)
 
     return rio.open(out_file, 'r+')
 
@@ -1519,6 +1634,7 @@ def samplePointsFromProbDensRaster(src: rio.DatasetReader,
     :param out_file: path to save the output shapefile or GeoPackage (.shp or .gpkg).
         If out_file is None, a Geopandas GeoDataFrame of the points is returned
     :param normalize_data: switch to normalize the probability data if it hasn't already been normalized
+    :param random_seed: a seed value used to generate repeatable results.
     :return: Either None or a Geopandas GeoDataFrame of the resulting points.
     """
     # Read the raster values into a numpy array
