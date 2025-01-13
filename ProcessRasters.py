@@ -1541,7 +1541,8 @@ def resampleRaster(src: rio.DatasetReader,
                    ref_src: rio.DatasetReader,
                    out_file: str,
                    num_bands: int = 1,
-                   match_extents: bool = False) -> rio.DatasetReader:
+                   match_extents: bool = False,
+                   new_nodata_val: Optional[float] = None) -> rio.DatasetReader:
     """
     Function to resample the resolution of one raster to match that of a reference raster.
     This function will also reproject the source projection to match the reference if needed.
@@ -1551,6 +1552,7 @@ def resampleRaster(src: rio.DatasetReader,
     :param out_file: location and name to save output raster
     :param num_bands: number of bands in the output dataset (default = 1)
     :param match_extents: if True, extents of the ref and src rasters will be matched
+    :param new_nodata_val: new no-data value; if None, a value compatible with ref_src's dtype will be used
     :return: rasterio dataset reader object in 'r+' mode
     """
     # Get the transform, dimensions, and projection of the reference dataset
@@ -1559,29 +1561,45 @@ def resampleRaster(src: rio.DatasetReader,
     ref_height = ref_src.height
     ref_crs = ref_src.crs
 
+    # Determine the data type of the reference raster
+    dtype = ref_src.dtypes[0]  # Assuming all bands have the same dtype
+
+    # Determine nodata value
+    if new_nodata_val is None:
+        if np.issubdtype(dtype, np.integer):
+            nodata_val = np.iinfo(dtype).min
+        else:
+            nodata_val = np.nan
+    else:
+        nodata_val = new_nodata_val
+
     # Prepare the profile for the output
     profile = ref_src.profile
-    nodata_val = profile.get('nodata', -9999)  # Default nodata value if not specified
     profile.update(
         {
             'count': num_bands,  # Number of bands
             'height': ref_height,
             'width': ref_width,
             'transform': ref_transform,
-            'nodata': nodata_val,  # Ensure nodata is explicitly set
+            'nodata': nodata_val,  # Update nodata value
         }
     )
 
     # Prepare the output arrays for all bands
     out_arrays = [
-        np.full((ref_height, ref_width), nodata_val, dtype=src.read(1).dtype) for _ in range(num_bands)
+        np.full((ref_height, ref_width), nodata_val, dtype=dtype) for _ in range(num_bands)
     ]
 
     # Loop over each band and resample
     for b in range(1, num_bands + 1):
         src_data = src.read(b)
-        # Replace invalid values in the source data
-        src_data = np.where(~np.isfinite(src_data), nodata_val, src_data)
+
+        # Replace existing no-data values in the source data with the new no-data value
+        if src.nodata is not None:
+            src_data = np.where(src_data == src.nodata, nodata_val, src_data)
+
+        # Replace invalid values in the source data with the new no-data value
+        src_data = np.where(~np.isfinite(src_data), nodata_val, src_data).astype(dtype)
 
         if match_extents:
             ref_bounds = ref_src.bounds
