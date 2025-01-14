@@ -445,6 +445,7 @@ def clipRaster_wShape(src: rio.DatasetReader,
         # Replace the existing no data value if new_nodata_val is specified
         if new_nodata_val is not None:
             # Convert the existing no data value to the new one
+            out_image[~np.isfinite(out_image)] = new_nodata_val
             out_image[out_image == nodata_val] = new_nodata_val
             out_meta['nodata'] = new_nodata_val
 
