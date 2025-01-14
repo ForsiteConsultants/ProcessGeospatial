@@ -372,7 +372,8 @@ def clipRaster_wShape(src: rio.DatasetReader,
                       select_value: Optional[Union[any, list[any]]] = None,
                       all_touched: Optional[bool] = True,
                       crop: Optional[bool] = True,
-                      use_extent: Optional[bool] = False) -> rio.DatasetReader:
+                      use_extent: Optional[bool] = False,
+                      new_nodata_val: Optional[float] = None) -> rio.DatasetReader:
     """
     Function to clip a raster with a shapefile or its extent.
 
@@ -384,6 +385,7 @@ def clipRaster_wShape(src: rio.DatasetReader,
     :param all_touched: If True, all cells touching the shapefile boundary are included (default = True)
     :param crop: crop output extent to match the extent of the data (default = True)
     :param use_extent: If True, clip raster using the shapefile's bounding box (default = False)
+    :param new_nodata_val: Value to replace the existing no data value in the output raster (default = None)
     :return: rasterio dataset reader object in 'r+' mode
     """
     if select_field is not None:
@@ -432,9 +434,19 @@ def clipRaster_wShape(src: rio.DatasetReader,
 
     # Open the raster file
     with rio.open(src_path) as new_src:
+        if new_src.nodata is None:
+            nodata_val = np.nan
+        else:
+            nodata_val = new_src.nodata
         # Clip the raster using the geometries or extent
-        out_image, out_transform = mask(new_src, geometries, all_touched=all_touched, crop=crop)
+        out_image, out_transform = mask(new_src, geometries, nodata=nodata_val, all_touched=all_touched, crop=crop)
         out_meta = new_src.meta.copy()
+
+        # Replace the existing no data value if new_nodata_val is specified
+        if new_nodata_val is not None:
+            # Convert the existing no data value to the new one
+            out_image[out_image == nodata_val] = new_nodata_val
+            out_meta['nodata'] = new_nodata_val
 
         # Update the metadata with the new dimensions, transform, and CRS
         out_meta.update(
@@ -447,6 +459,7 @@ def clipRaster_wShape(src: rio.DatasetReader,
 
     with rio.open(out_file, 'w', **out_meta) as dst:
         dst.write(out_image)
+
         # Calculate new statistics
         calculateStatistics(dst)
 
