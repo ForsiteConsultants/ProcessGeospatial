@@ -26,6 +26,7 @@ from shapely.geometry import Point, box, shape, mapping
 from shapely.affinity import translate
 from joblib import Parallel, delayed
 from typing import Union, Optional
+import warnings
 
 try:
     from rasterio import shutil
@@ -1308,16 +1309,16 @@ def mosaicRasters(mosaic_list: list[Union[str, rio.DatasetReader]],
         if resolution is None:
             resolution = res
         elif res != resolution:
-            raise ValueError("All input rasters must have the same resolution for 'max' mode.")
+            warnings.warn('Warning: Not all input rasters have the same resolution.')
 
     # Calculate bounds based on the extent_mode
-    if extent_mode == "union":
+    if extent_mode == 'union':
         # Default merge behavior (union of extents)
         mosaic, transform = merge(datasets)
-    elif extent_mode == "max":
+    elif extent_mode == 'max':
         # Explicitly set bounds to max_bounds
         mosaic, transform = merge(datasets, bounds=max_bounds, res=resolution)
-    elif extent_mode == "trim":
+    elif extent_mode == 'trim':
         # Trim to valid data bounds (calculated in the previous implementation)
         valid_bounds = None
         for dataset in datasets:
@@ -1336,7 +1337,7 @@ def mosaicRasters(mosaic_list: list[Union[str, rio.DatasetReader]],
                 )
         mosaic, transform = merge(datasets, bounds=valid_bounds, res=resolution)
     else:
-        raise ValueError(f"Invalid extent_mode '{extent_mode}'. Choose from 'union', 'max', or 'trim'.")
+        raise ValueError(f'Invalid extent_mode "{extent_mode}". Choose from "union", "max", or "trim".')
 
     # Update metadata based on the mosaic
     out_meta = datasets[0].meta.copy()
@@ -1350,8 +1351,7 @@ def mosaicRasters(mosaic_list: list[Union[str, rio.DatasetReader]],
 
     # Close all datasets
     for ds in datasets:
-        if ds.name == out_file:
-            ds.close()
+        ds.close()
 
     # Write to the output file
     with rio.open(out_file, 'w', **out_meta) as dst:
