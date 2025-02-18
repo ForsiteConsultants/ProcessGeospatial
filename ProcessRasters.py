@@ -19,6 +19,7 @@ from rasterio.merge import merge
 from rasterio.transform import xy, from_origin, from_bounds, rowcol
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 from rasterio.windows import Window
+# from rasterio.enums import Resampling
 # from rasterio.io import MemoryFile
 from rasterio.transform import Affine
 from pyproj import Transformer
@@ -1581,7 +1582,8 @@ def resampleRaster(src: rio.DatasetReader,
                    out_file: str,
                    num_bands: int = 1,
                    match_extents: bool = False,
-                   new_nodata_val: Optional[float] = None) -> rio.DatasetReader:
+                   new_nodata_val: Optional[float] = None,
+                   method: str = 'nearest') -> rio.DatasetReader:
     """
     Function to resample the resolution of one raster to match that of a reference raster.
     This function will also reproject the source projection to match the reference if needed.
@@ -1592,8 +1594,21 @@ def resampleRaster(src: rio.DatasetReader,
     :param num_bands: number of bands in the output dataset (default = 1)
     :param match_extents: if True, extents of the ref and src rasters will be matched
     :param new_nodata_val: new no-data value; if None, a value compatible with ref_src's dtype will be used
+    :param method: resampling method to use (default = "nearest"). Options: "nearest", "bilinear", "cubic", "average", "mode"
     :return: rasterio dataset reader object in 'r+' mode
     """
+    # Define a dictionary to map method strings to rasterio resampling methods
+    resampling_methods = {
+        'nearest': Resampling.nearest,
+        'bilinear': Resampling.bilinear,
+        'cubic': Resampling.cubic,
+        'average': Resampling.average,
+        'mode': Resampling.mode
+    }
+
+    # Get the resampling method, default to nearest if invalid
+    resampling_method = resampling_methods.get(method.lower(), Resampling.nearest)
+
     # Get the transform, dimensions, and projection of the reference dataset
     ref_transform = ref_src.transform
     ref_width = ref_src.width
@@ -1652,7 +1667,7 @@ def resampleRaster(src: rio.DatasetReader,
                 dst_width=ref_width,
                 dst_height=ref_height,
                 dst_bounds=ref_bounds,  # Ensure that the destination matches the reference extent
-                resampling=Resampling.nearest
+                resampling=resampling_method
             )
         else:
             # Reproject to match resolution but maintain the source extent
@@ -1663,7 +1678,7 @@ def resampleRaster(src: rio.DatasetReader,
                 src_crs=src.crs,
                 dst_transform=ref_transform,
                 dst_crs=ref_crs,
-                resampling=Resampling.nearest
+                resampling=resampling_method
             )
 
     # Write the resampled data to a new raster file
