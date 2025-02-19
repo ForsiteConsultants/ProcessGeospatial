@@ -1959,18 +1959,20 @@ def updateRaster(src: rio.DatasetReader,
     profile = src.profile
 
     # Update profile
-    profile.update(
-        compress='lzw'  # Specify LZW compression
-    )
+    profile.update(compress='lzw')  # Specify LZW compression
     src_path = src.name  # Get path of input source dataset
     src.close()  # Close input source dataset
 
-    # Write new data to source out_path (replace original data)
+    # Ensure array shape matches expected raster shape
+    if len(array.shape) == 2:  # If 2D, add an axis to make it (1, height, width)
+        array = array[np.newaxis, :, :]
+
     with rio.open(src_path, 'r+', **profile) as dst:
-        if band is not None:
-            # Write data to source raster
+        if dst.count == 1:  # Single-band raster
+            dst.write(array[0] if array.shape[0] == 1 else array, 1)
+        elif band is not None:  # Multi-band raster, update a single band
             dst.write(array[0], band)
-        else:
+        else:  # Multi-band raster, update all bands
             dst.write(array)
 
         if nodata_val is not None:
@@ -1982,6 +1984,7 @@ def updateRaster(src: rio.DatasetReader,
 
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(src_path, 'r+')
+
 
 # STILL WORKING ON THIS FUNCTION
 # def updateLargeRas_wSmallRas(src_lrg, src_small, nodata_val=None):
