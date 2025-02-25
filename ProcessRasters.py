@@ -542,7 +542,7 @@ def exportRaster(src: rio.DatasetReader,
 
     :param src: input rasterio dataset reader object
     :param out_file: location and name to save output raster
-    :return: rasterio dataset reader object
+    :return: rasterio dataset reader object in 'r+' mode
     """
     # Get profile
     src_profile = src.profile
@@ -562,7 +562,38 @@ def exportRaster(src: rio.DatasetReader,
         # Calculate new statistics
         calculateStatistics(dst)
 
-    return
+    # Return new raster as "readonly" rasterio openfile object
+    return rio.open(out_file, 'r+')
+
+
+def extractRasterBand(src_path: str, out_path: str, band: int) -> rio.DatasetReader:
+    """
+    Extract a specific band from a raster and save it as a new raster.
+
+    :param src_path: Path to the source raster file.
+    :param out_path: Path to save the extracted band raster file.
+    :param band: The band number to extract (1-based index).
+    :return: rasterio dataset reader object in 'r+' mode
+    """
+    with rio.open(src_path) as src:
+        profile = src.profile
+
+        # Ensure the band number is valid
+        if band < 1 or band > src.count:
+            raise ValueError(f"Invalid band number: {band}. The raster has {src.count} bands.")
+
+        # Read the specified band
+        band_data = src.read(band)
+
+        # Update the profile for a single-band output
+        profile.update(count=1, dtype=band_data.dtype)
+
+        # Save the extracted band as a new raster
+        with rio.open(out_path, 'w', **profile) as dst:
+            dst.write(band_data, 1)
+
+    # Return new raster as "readonly" rasterio openfile object
+    return rio.open(out_path, 'r+')
 
 
 def extractValuesAtPoints(in_pts: Union[str, GeoDataFrame],
