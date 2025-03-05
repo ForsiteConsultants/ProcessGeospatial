@@ -25,6 +25,7 @@ from rasterio.transform import Affine
 from pyproj import Transformer
 from shapely.geometry import Point, box, shape, mapping
 from shapely.affinity import translate
+from scipy.spatial import cKDTree
 from joblib import Parallel, delayed
 from typing import Union, Optional
 import warnings
@@ -1722,63 +1723,79 @@ def resampleRaster(src: rio.DatasetReader,
 
 def samplePointsFromProbDensRaster(src: rio.DatasetReader,
                                    num_points: int,
+                                   min_distance: float = 0,
                                    out_file: str = None,
                                    normalize_data: bool = False,
-                                   random_seed: Union[None, int] = None) -> Union[None, gpd.GeoDataFrame]:
+                                   random_seed: int = None) -> Union[None, gpd.GeoDataFrame]:
     """
-    Function to sample points from a probability density raster.
-
-    Note: The probability density data must be normalized (i.e., all values must sum to 1 over the entire raster).
-    If the data are not normalized, set normalize_data to True to have the function normalize the data
-    before processing. E.g., a kernel density raster can be used as input, with normalized_data set to True.
+    Sample points from a probability density raster while ensuring a minimum spacing between points.
 
     :param src: input rasterio dataset reader object with a single band of data
     :param num_points: number of points to sample
-    :param out_file: path to save the output shapefile or GeoPackage (.shp or .gpkg).
-        If out_file is None, a Geopandas GeoDataFrame of the points is returned
-    :param normalize_data: switch to normalize the probability data if it hasn't already been normalized
-    :param random_seed: a seed value used to generate repeatable results.
-    :return: Either None or a Geopandas GeoDataFrame of the resulting points.
+    :param min_distance: minimum spacing (meters) between points (Default = 0)
+    :param out_file: path to save the output shapefile or GeoPackage (.shp or .gpkg)
+    :param normalize_data: whether to normalize probability data
+    :param random_seed: seed value for repeatable results
+    :return: Either None or a GeoDataFrame of the resulting points.
     """
-    # Read the raster values into a numpy array
-    raster_array = src.read(1)
-
-    # Mask out invalid (NaN) values
-    raster_array = np.ma.masked_invalid(raster_array)
-
-    # Mask values < 0 or > 100
-    raster_array = np.ma.masked_where((raster_array < 0) | (raster_array > 100), raster_array)
-
-    # Get the affine transformation to convert pixel indices to coordinates
-    transform = src.transform
-
-    # Flatten the raster and get the corresponding probabilities
-    probabilities = raster_array.compressed()  # Only valid (non-NaN) values
-
-    if normalize_data:
-        probabilities /= probabilities.sum()  # Normalize data to sum to 1
-
-    # Get the indices of valid pixels
-    valid_indices = np.argwhere(~raster_array.mask)
-
-    # Randomly sample indices based on probabilities
     if random_seed is not None:
         np.random.seed(random_seed)
-    sampled_indices = np.random.choice(range(len(probabilities)), size=num_points, replace=True, p=probabilities)
 
-    # Convert sampled indices back to row, col coordinates
+    # Read raster and mask invalid values
+    raster_array = src.read(1)
+    raster_array = np.ma.masked_invalid(raster_array)
+    raster_array = np.ma.masked_where((raster_array < 0) | (raster_array > 100), raster_array)
+
+    # Get transform and valid pixel indices
+    transform = src.transform
+    valid_indices = np.argwhere(~raster_array.mask)
+
+    # Flatten raster and get valid probabilities
+    probabilities = raster_array.compressed()
+
+    if normalize_data:
+        probabilities /= probabilities.sum()  # Normalize to sum to 1
+
+    if min_distance > 0:
+        # Sample more points than needed to ensure filtering success
+        oversample_factor = 3  # Try generating 3x more points initially
+        sample_count = int(num_points * oversample_factor)
+    else:
+        sample_count = num_points
+
+    # Sample valid points based on probability
+    sampled_indices = np.random.choice(len(probabilities), size=sample_count, p=probabilities)
+
+    # Convert sampled indices to real-world coordinates
     sampled_coords = valid_indices[sampled_indices]
-
-    # Convert the row, col indices into real-world coordinates using the raster's affine transform
     sampled_points = [Point(rio.transform.xy(transform, row, col)) for row, col in sampled_coords]
 
-    # Extract CRS from the raster dataset
-    raster_crs = src.crs
+    # Convert to NumPy array for fast processing
+    point_array = np.array([[p.x, p.y] for p in sampled_points])
 
-    # Create a GeoDataFrame for the sampled points and set the CRS to match the raster
-    gdf = gpd.GeoDataFrame(geometry=sampled_points, crs=raster_crs)
+    # Filter points using KDTree for efficient min-distance checks
+    if (min_distance > 0) and (len(point_array) > 1):
+        tree = cKDTree(point_array)
+        valid_indices = tree.query_ball_tree(tree, min_distance)
 
-    # Save the result to a shapefile or GeoPackage based on the output extension
+        # Keep only unique points (no points closer than `min_distance`)
+        unique_mask = np.ones(len(valid_indices), dtype=bool)
+        for i, neighbors in enumerate(valid_indices):
+            if len(neighbors) > 1:  # If a point is too close to another, mark it as invalid
+                unique_mask[i] = False
+
+        # Select only the unique points
+        filtered_points = point_array[unique_mask]
+    else:
+        filtered_points = point_array  # If only one point, return it
+
+    # Ensure we don't return more than the requested number of points
+    filtered_points = filtered_points[:num_points]
+
+    # Create a GeoDataFrame
+    gdf = gpd.GeoDataFrame(geometry=[Point(x, y) for x, y in filtered_points], crs=src.crs)
+
+    # Save or return result
     if out_file is None:
         return gdf
     elif out_file.endswith('.shp'):
