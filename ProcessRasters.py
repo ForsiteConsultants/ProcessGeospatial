@@ -13,7 +13,7 @@ import geopandas as gpd
 from geopandas import GeoDataFrame
 import rasterio as rio
 from rasterio.mask import mask
-# from rasterio import CRS
+from rasterio.crs import CRS
 from rasterio.features import shapes, geometry_window, geometry_mask, rasterize
 from rasterio.merge import merge
 from rasterio.transform import xy, from_origin, from_bounds, rowcol
@@ -524,13 +524,16 @@ def defineProjection(src: rio.DatasetReader,
     # Close input source dataset
     src.close()
 
-    # Reproject raster and write to out_file
-    with rio.open(src_path, 'r+') as dst:
-        # Update the CRS in the dataset's metadata
-        dst.crs = crs
+    # Convert CRS string to a rasterio CRS object
+    crs_obj = CRS.from_string(crs)
 
-        # Calculate new statistics
-        calculateStatistics(dst)
+    with rio.open(src_path, 'r+') as src:
+        # Assign the CRS
+        src.crs = crs_obj
+
+        # Ensure ArcGIS compatibility by updating metadata tags
+        wkt = crs_obj.to_wkt()
+        src.update_tags(ns='gdal', SRS_WKT=wkt)
 
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(src_path, 'r+')
