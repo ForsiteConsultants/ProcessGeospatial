@@ -296,7 +296,8 @@ def changeDtype(src: rio.DatasetReader,
                 dtype: np.dtype,
                 nodata_val: Optional[Union[int, float]] = None) -> rio.DatasetReader:
     """
-    Function to change a raster's datatype to int or float.
+    Function to change a raster's datatype to int or float, ensuring the no-data value
+    is within the valid range of the new datatype.
 
     :param src: input rasterio dataset reader object
     :param dtype: new numpy data type (e.g., np.int32, np.float32)
@@ -306,7 +307,16 @@ def changeDtype(src: rio.DatasetReader,
     if nodata_val is None:
         nodata_val = src.profile['nodata']
 
-    # Convert array values to integer type
+    # Get valid range of the target dtype
+    dtype_info = np.iinfo(dtype) if np.issubdtype(dtype, np.integer) else np.finfo(dtype)
+    valid_min, valid_max = dtype_info.min, dtype_info.max
+
+    # Adjust nodata value if it's outside the valid range
+    if nodata_val is not None:
+        if nodata_val < valid_min or nodata_val > valid_max:
+            nodata_val = valid_min if np.issubdtype(dtype, np.integer) else np.nan
+
+    # Read and convert array values
     src_array = src.read()
     src_array[src_array == src.nodata] = nodata_val
     src_array = np.asarray(src_array, dtype=dtype)
@@ -315,19 +325,18 @@ def changeDtype(src: rio.DatasetReader,
     src_path = src.name
     profile = src.profile
 
-    # Specify LZW compression and assign integer datatype
+    # Specify LZW compression and update profile
     profile.update(
         compress='lzw',
         nodata=nodata_val,
-        dtype=dtype)
+        dtype=dtype
+    )
 
     src.close()
 
     # Create new raster file
     with rio.open(src_path, 'w', **profile) as dst:
-        # Write data to new raster
         dst.write(src_array)
-        # Calculate new statistics
         calculateStatistics(dst)
 
     return rio.open(src_path, 'r+')
@@ -1355,23 +1364,34 @@ def mosaicRasters(mosaic_list: list[Union[str, rio.DatasetReader]],
         # Explicitly set bounds to max_bounds
         mosaic, transform = merge(datasets, bounds=max_bounds, res=resolution)
     elif extent_mode == 'trim':
-        # Trim to valid data bounds (calculated in the previous implementation)
+        # Trim to valid data bounds (calculate the extent based on non-nodata values)
         valid_bounds = None
         for dataset in datasets:
             data = dataset.read(1, masked=True)  # Read as masked array
-            bounds = rio.windows.bounds(
-                rio.features.geometry_window(dataset, [rio.features.shapes(data, transform=dataset.transform)])
-            )
-            if valid_bounds is None:
-                valid_bounds = bounds
-            else:
-                valid_bounds = (
-                    min(valid_bounds[0], bounds[0]),
-                    min(valid_bounds[1], bounds[1]),
-                    max(valid_bounds[2], bounds[2]),
-                    max(valid_bounds[3], bounds[3]),
-                )
-        mosaic, transform = merge(datasets, bounds=valid_bounds, res=resolution)
+            shapes_generator = rio.features.shapes(data, transform=dataset.transform)
+
+            # Extract geometries from the generator
+            geometries = [geom for geom, _ in shapes_generator]
+
+            if geometries:
+                # Get the window covering the valid geometries
+                window = rio.features.geometry_window(dataset, geometries)
+                bounds = rio.windows.bounds(window, dataset.transform)
+
+                if valid_bounds is None:
+                    valid_bounds = bounds
+                else:
+                    valid_bounds = (
+                        min(valid_bounds[0], bounds[0]),  # minX
+                        min(valid_bounds[1], bounds[1]),  # minY
+                        max(valid_bounds[2], bounds[2]),  # maxX
+                        max(valid_bounds[3], bounds[3])  # maxY
+                    )
+
+        if valid_bounds is not None:
+            mosaic, transform = merge(datasets, bounds=valid_bounds, res=resolution)
+        else:
+            raise ValueError("No valid data found in input rasters to determine trimmed extent.")
     else:
         raise ValueError(f'Invalid extent_mode "{extent_mode}". Choose from "union", "max", or "trim".')
 
