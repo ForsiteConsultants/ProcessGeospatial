@@ -12,11 +12,12 @@ import geemap
 import os
 import geopandas as gpd
 import ProcessRasters as pr
+import gc
 from typing import Optional
 
 
 ### LAND COVER DATA
-def _get_landcover_col(aoi, start_date, end_date):
+def _get_dynworld_col(aoi, start_date, end_date):
     """
     Retrieve the Dynamic World land cover dataset for the specified AOI and time range.
 
@@ -25,12 +26,12 @@ def _get_landcover_col(aoi, start_date, end_date):
     :param end_date: List of end dates in YYYY-MM-DD format.
     :return: An Earth Engine ImageCollection.
     """
-    landcover_col = (ee.ImageCollection("GOOGLE/DYNAMICWORLD/V1")
+    landcover_col = (ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1')
                      .filterBounds(aoi)
                      .filterDate(start_date[0], end_date[0]))
 
     for i in range(1, len(start_date)):
-        landcover_col1 = (ee.ImageCollection("GOOGLE/DYNAMICWORLD/V1")
+        landcover_col1 = (ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1')
                           .filterBounds(aoi)
                           .filterDate(start_date[i], end_date[i]))
         landcover_col = landcover_col.merge(landcover_col1)
@@ -53,28 +54,30 @@ def _get_aoi(shp_path) -> tuple:
     return bbox, ee_shp, ee_geometry
 
 
-def get_landcover(ee_project_id: str,
-                  aoi_shp_path: str,
-                  start_date: str,
-                  end_date: str,
-                  out_folder: str,
-                  bands: Optional[list] = None,
-                  out_epsg: Optional[int] = 4326,
-                  out_res: float = None,
-                  prob_type: Optional[str] = None) -> None:
+def get_dynworld_landcover(ee_project_id: str,
+                           aoi_shp_path: str,
+                           start_date: list,
+                           end_date: list,
+                           out_folder: str,
+                           bands: Optional[list] = None,
+                           out_epsg: Optional[int] = 4326,
+                           out_res: float = 10,
+                           prob_type: Optional[str] = None) -> None:
     """
-    Function to download Google Earth Engine Land Cover data.
+    Function to download Google Earth Engine Dynamic World Land Cover data.
 
     :param ee_project_id: The id of the Google Earth Engine project to use.
     :param aoi_shp_path: Path to a shapefile to use as an AOI (area of interest) for data download.
-    :param start_date: The start date of imagery to process. Must be a string formatted as YYYY-MM-DD.
-    :param end_date: The end date of imagery to process. Must be a string formatted as YYYY-MM-DD.
+    :param start_date: List of imagery start dates to process. Dates must be a string formatted as YYYY-MM-DD.
+        Each start date must pair with an end date at the same element location within the list.
+    :param end_date: List of imagery end dates to process. Dates must be a string formatted as YYYY-MM-DD.
+        Each end date must pair with a start date at the same element location within the list.
     :param bands: A list of strings containing the land cover bands to download. If None, all bands are downloaded.
         Options: ['water', 'trees', 'grass', 'flooded_vegetation', 'crops', 'shrub_and_scrub',
                  'built', 'bare', 'snow_and_ice']
     :param out_epsg: The EPSG to apply to the output data.
         Default: 4326 (Geographic WGS84)
-    :param out_res: The resolution of the output data. Should be in units that match out_epsg.
+    :param out_res: The resolution of the output data. Should be in units that match out_epsg. (Default = 10)
     :param out_folder: The folder to save the output data.
     :param prob_type: The type of probability statistics to calculate and download.
         If None, no probability data are downloaded. Options: 'mean', 'median'.
@@ -94,6 +97,7 @@ def get_landcover(ee_project_id: str,
     # Get the AOI shapefile bounding box, earth engine shape, and earth engine geometry
     bbox, ee_shp, ee_geometry = _get_aoi(shp_path=aoi_shp_path)
     ymin, xmin, ymax, xmax = bbox
+    ee_shp = ee_geometry
 
     # Check if the AOI is large (greater than 1 degree in X or Y direction)
     large_aoi = False
@@ -101,12 +105,12 @@ def get_landcover(ee_project_id: str,
         large_aoi = True
 
     # Build the data
-    landcover_col = _get_landcover_col(ee_geometry, [start_date], [end_date])
+    landcover_col = _get_dynworld_col(ee_geometry, start_date, end_date)
 
     # Print a list of images in the collection
-    print('Images in the Collection: /n',landcover_col.aggregate_array('system:index').getInfo())
+    print('Images in the Collection:\n\t', landcover_col.aggregate_array('system:index').getInfo())
 
-    #get the most frequently occuring class label based on example code from here
+    #get the most frequently occuring class label (using mode) based on example code from here
     #(https://developers.google.com/earth-engine/tutorials/community/introduction-to-dynamic-world-pt-1)
     classification = landcover_col.select('label')
     dw_composite = classification.reduce(ee.Reducer.mode())
@@ -118,7 +122,7 @@ def get_landcover(ee_project_id: str,
         if not os.path.exists(tile_dir):
             os.makedirs(tile_dir)
         tile_features = geemap.fishnet(ee_shp, rows=2, cols=2)
-        geemap.download_ee_image_tiles(dw_composite,
+        geemap.download_ee_image_tiles(image=dw_composite,
                                        features=tile_features,
                                        out_dir=tile_dir,
                                        prefix='landcover_',
@@ -135,15 +139,16 @@ def get_landcover(ee_project_id: str,
                                       extent_mode='trim')
 
         # Delete temporary data
-        for path in mosaic_list:
-            os.remove(path)
-        os.remove(tile_dir)
         mosaic_ras.close()
         del mosaic_ras
+        gc.collect()
+        for path in mosaic_list:
+            os.remove(path)
+        os.rmdir(tile_dir)
 
     else:
         # Download landcover class (one raster)
-        geemap.download_ee_image(dw_composite,
+        geemap.download_ee_image(image=dw_composite,
                                  filename=os.path.join(out_folder, 'landcover.tif'),
                                  region=ee_geometry,
                                  crs=dst_crs,
@@ -295,6 +300,7 @@ def _apply_cld_shdw_mask(img):
     # Subset reflectance bands and update their masks, return the result.
     return img.select('B.*').updateMask(not_cld_shdw)
 
+
 def get_sentinel2(ee_project_name: str,
                   aoi_shp_path: str,
                   start_date: str,
@@ -352,7 +358,7 @@ def get_sentinel2(ee_project_name: str,
     s2_sr_cld_col_eval = _get_s2_sr_cld_col(ee_geometry, start_date, end_date, cloud_filter)
 
     # Print the number of images in the collection
-    print('%d images found.'%(len(s2_sr_cld_col_eval.aggregate_array('system:index').getInfo())))
+    print('%d images found.' % (len(s2_sr_cld_col_eval.aggregate_array('system:index').getInfo())))
 
     # Build cloud free data
     # Apply cloud and cloud-shadow masking, and use median method to calculate reflectances of the missing pixels
