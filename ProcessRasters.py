@@ -79,44 +79,70 @@ def arrayToRaster(array: np.ndarray,
                   nodata_val: Optional[Union[int, float]] = None,
                   dtype: np.dtype = np.float32) -> rio.DatasetReader:
     """
-    Function to convert a numpy array to a raster.
+    Convert a NumPy array to a raster.
 
-    :param array: input numpy array
-    :param out_file: path (with name) to save output raster
-    :param ras_profile: profile of reference rasterio dataset reader object
-    :param nodata_val: new integer or floating point value to assign as "no data" (default = None)
-    :param dtype: the numpy data type of new raster
-    :return: rasterio dataset reader object in r+ mode
+    :param array: Input NumPy array
+    :param out_file: Path to save the output raster
+    :param ras_profile: Profile of reference raster (dict from rasterio dataset)
+    :param nodata_val: NoData value (default = None, meaning use existing)
+    :param dtype: Data type for the output raster (default = np.float32)
+    :return: rasterio dataset reader object in 'r+' mode
     """
-    # Get profile and verify array shape matches reference raster profile
+
+    # Copy and update profile
     profile = ras_profile.copy()
 
-    # Check if the dimensions match (height, width, bands)
+    # Ensure array shape matches profile (bands, height, width)
     required_shape = (profile['count'], profile['height'], profile['width'])
     if array.shape != required_shape:
         raise ValueError(f'Array shape {array.shape} does not match required shape {required_shape}')
 
-    # Update profile
+    # Check if dtype is integer or float
+    is_integer = np.issubdtype(dtype, np.integer)
+
+    # Convert array to requested dtype
+    if is_integer:
+        array = np.round(array).astype(dtype)  # Round for integer conversion
+    else:
+        array = array.astype(dtype)  # Preserve float precision
+
+    # Handle NoData values
+    if nodata_val is not None:
+        if is_integer:
+            dtype_info = np.iinfo(dtype)
+            valid_min, valid_max = dtype_info.min, dtype_info.max
+
+            # Ensure NoData value is within valid range
+            if nodata_val < valid_min or nodata_val > valid_max:
+                nodata_val = valid_min  # Use lowest valid value
+        else:
+            # Floats can use NaN as NoData
+            nodata_val = np.nan if np.isnan(nodata_val) else float(nodata_val)
+
+        # Replace any existing NoData values in the array
+        if 'nodata' in profile and profile['nodata'] is not None:
+            array[array == profile['nodata']] = nodata_val
+
+    # Update profile for valid NoData value
     profile.update(
-        compress='lzw'  # Specify LZW compression
+        compress='lzw',
+        bigtiff='yes',  # Enable large raster support if needed
+        nodata=nodata_val,
+        dtype=dtype
     )
-    if nodata_val:
-        profile.update(
-            nodata=nodata_val  # Specify nodata value
-        )
-    if dtype:
-        profile.update(
-            dtype=dtype
-        )
 
-    # Create new raster file
+    # Write the raster file
     with rio.open(out_file, 'w', **profile) as dst:
-        # Write data to new raster
         dst.write(array)
-        # Calculate new statistics
-        calculateStatistics(dst)
 
-    # Return new raster as "readonly" rasterio openfile object
+        # Update Raster Tags for ArcGIS Compatibility
+        dst.update_tags(
+            DataType='Integer' if is_integer else 'Float',
+            NoDataValue=str(nodata_val) if is_integer else 'nan',
+            Compression='LZW'
+        )
+
+    # Return new raster as 'readonly' rasterio openfile object
     return rio.open(out_file, 'r+')
 
 
@@ -296,38 +322,64 @@ def changeDtype(src: rio.DatasetReader,
                 dtype: np.dtype,
                 nodata_val: Optional[Union[int, float]] = None) -> rio.DatasetReader:
     """
-    Function to change a raster's datatype to int or float, ensuring the no-data value
-    is within the valid range of the new datatype.
+    Convert a raster's datatype, ensuring that NoData values are handled correctly and remain ArcGIS-compatible.
 
-    :param src: input rasterio dataset reader object
-    :param dtype: new numpy data type (e.g., np.int32, np.float32)
-    :param nodata_val: value to assign as "no data" (default = None)
+    :param src: rasterio dataset reader object
+    :param dtype: target numpy data type (e.g., np.int32, np.float32)
+    :param nodata_val: optional custom NoData value, defaults to the raster's current NoData value
     :return: rasterio dataset reader object in 'r+' mode
     """
     if nodata_val is None:
-        nodata_val = src.profile['nodata']
+        nodata_val = src.profile.get('nodata', None)
 
-    # Get valid range of the target dtype
-    dtype_info = np.iinfo(dtype) if np.issubdtype(dtype, np.integer) else np.finfo(dtype)
-    valid_min, valid_max = dtype_info.min, dtype_info.max
-
-    # Adjust nodata value if it's outside the valid range
-    if nodata_val is not None:
-        if nodata_val < valid_min or nodata_val > valid_max:
-            nodata_val = valid_min if np.issubdtype(dtype, np.integer) else np.nan
-
-    # Read and convert array values
+    # Read data
     src_array = src.read()
-    src_array[src_array == src.nodata] = nodata_val
-    src_array = np.asarray(src_array, dtype=dtype)
 
-    # Get file path and profile of the dataset object
+    # Handle string-based raster values (if the raster is stored as char data)
+    if src_array.dtype.kind in {'S', 'U'}:  # Check for string (S: bytes, U: unicode)
+        try:
+            src_array = src_array.astype(np.float32)  # Convert first to float
+        except ValueError as e:
+            raise ValueError('Cannot convert character data to numeric type') from e
+
+    # Check if output is integer or float
+    is_integer = np.issubdtype(dtype, np.integer)
+
+    # Convert to requested dtype (preserving float if needed)
+    if is_integer:
+        src_array = np.round(src_array).astype(dtype)  # Ensure proper rounding for ints
+    else:
+        src_array = src_array.astype(dtype)
+
+    # Handle NoData values for ArcGIS
+    if nodata_val is not None:
+        if is_integer:
+            dtype_info = np.iinfo(dtype)
+            valid_min, valid_max = dtype_info.min, dtype_info.max
+            nodata_val = int(nodata_val)  # Ensure nodata is int
+            # ArcGIS prefers negative values for int NoData, ensure it fits
+            if nodata_val < valid_min or nodata_val > valid_max:
+                nodata_val = -9999 if valid_min <= -9999 <= valid_max else valid_min
+        else:
+            dtype_info = np.finfo(dtype)
+            valid_min, valid_max = dtype_info.min, dtype_info.max
+            nodata_val = np.nan if np.isnan(nodata_val) else float(nodata_val)
+            if nodata_val < valid_min or nodata_val > valid_max:
+                nodata_val = np.nan  # Ensure nodata is float-compatible
+
+        # Replace old NoData values with new NoData value
+        if src.nodata is not None:
+            src_array[src_array == src.nodata] = nodata_val
+
+    # Get file path and profile of the dataset
     src_path = src.name
     profile = src.profile
 
-    # Specify LZW compression and update profile
+    # Update profile for ArcGIS compatibility
     profile.update(
         compress='lzw',
+        tiled=True,  # ArcGIS prefers tiled GeoTIFFs
+        bigtiff='yes',  # Enable large raster support if needed
         nodata=nodata_val,
         dtype=dtype
     )
@@ -337,7 +389,12 @@ def changeDtype(src: rio.DatasetReader,
     # Create new raster file
     with rio.open(src_path, 'w', **profile) as dst:
         dst.write(src_array)
-        calculateStatistics(dst)
+        # Update Raster Tags
+        dst.update_tags(
+            DataType='Integer' if is_integer else 'Float',
+            NoDataValue=str(nodata_val) if is_integer else 'nan',
+            Compression='LZW'
+        )
 
     return rio.open(src_path, 'r+')
 
