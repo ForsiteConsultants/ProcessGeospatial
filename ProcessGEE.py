@@ -301,7 +301,7 @@ def _apply_cld_shdw_mask(img):
     return img.select('B.*').updateMask(not_cld_shdw)
 
 
-def get_sentinel2(ee_project_name: str,
+def get_sentinel2(ee_project_id: str,
                   aoi_shp_path: str,
                   start_date: str,
                   end_date: str,
@@ -317,7 +317,7 @@ def get_sentinel2(ee_project_name: str,
     """
     Function to get Sentinel 2 data from Google Earth Engine.
 
-    :param ee_project_name: The name of the Google Earth Engine project to use.
+    :param ee_project_id: The ID of the Google Earth Engine project to use.
     :param aoi_shp_path: Path to a shapefile to use as an AOI (area of interest) for data download.
     :param start_date: The start date of imagery to process. Must be a string formatted as 'YYYY-MM-DD'.
     :param end_date: The end date of imagery to process. Must be a string formatted as 'YYYY-MM-DD'.
@@ -336,7 +336,7 @@ def get_sentinel2(ee_project_name: str,
     :return: None
     """
     ee.Authenticate()
-    ee.Initialize(project=ee_project_name)
+    ee.Initialize(project=ee_project_id)
 
     # Set the output EPSG
     dst_crs = f'EPSG:{out_epsg}'
