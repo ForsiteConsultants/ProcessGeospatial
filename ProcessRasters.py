@@ -1083,40 +1083,40 @@ def getMinMax(in_rasters: Union[list[str], list[rio.DatasetReader]],
     """
     # Verify inputs
     if not isinstance(in_rasters, list):
-        raise TypeError('[ProcessRasters] getMinMax() param "inrasters" must be '
-                        'a list of file paths or rasterio dataset reader objects')
+        raise TypeError('[ProcessRasters] getMinMax() param "in_rasters" must be a list of file paths or rasterio dataset reader objects')
     if not isinstance(out_file, str):
         raise TypeError('[ProcessRasters] getMinMax() param "out_file" must be a string data type')
-    if not isinstance(min_max, str):
-        raise TypeError('[ProcessRasters] getMinMax() param "min_max" must be a string data type')
-    elif min_max not in ['min', 'max']:
+    if not isinstance(min_max, str) or min_max not in ['min', 'max']:
         raise ValueError('[ProcessRasters] getMinMax() param "min_max" must be either "min" or "max"')
     if not isinstance(full_extent, bool):
         raise TypeError('[ProcessRasters] getMinMax() param "full_extent" must be a boolean data type')
 
-    # Get list of rasterio dataset reader objects if list of file paths was provided
+    # Convert file paths to rasterio datasets if necessary
     if isinstance(in_rasters[0], str):
         in_rasters = [getRaster(path) for path in in_rasters]
 
-    # Use the appropriate bounds option based on full_extent parameter
+    # Determine the bounds based on full_extent flag
     bounds = None if full_extent else 'intersection'
 
-    if 'min' in min_max:
-        # Merge rasters to get the minimum values
-        mosaic, out_trans = merge(in_rasters, method='min', bounds=bounds)
-    else:
-        # Merge rasters to get the maximum values
-        mosaic, out_trans = merge(in_rasters, method='max', bounds=bounds)
+    # Use the correct merging method
+    method = 'min' if min_max == 'min' else 'max'
+    mosaic, out_trans = merge(in_rasters, method=method, bounds=bounds)
 
-    # Update the profile with new dimensions and transform
-    profile = in_rasters[0].profile
+    # Get reference raster metadata
+    ref_raster = in_rasters[0]
+    profile = ref_raster.profile.copy()
+
+    # Ensure profile matches the merged raster
     profile.update({
-        'height': mosaic.shape[1],
-        'width': mosaic.shape[2],
-        'transform': out_trans
+        'height': mosaic.shape[1],  # Correct height
+        'width': mosaic.shape[2],  # Correct width
+        'transform': out_trans,  # Correct transform
+        'dtype': mosaic.dtype,  # Ensure dtype consistency
+        'nodata': ref_raster.nodata,  # Preserve nodata values
+        'crs': ref_raster.crs  # Preserve coordinate reference system
     })
 
-    # Create new raster file and write data
+    # Write the output raster
     with rio.open(out_file, 'w', **profile) as dst:
         dst.write(mosaic)
 
@@ -1709,7 +1709,6 @@ def resampleRaster(src: rio.DatasetReader,
     :param method: resampling method to use (default = "nearest"). Options: "nearest", "bilinear", "cubic", "average", "mode"
     :return: rasterio dataset reader object in 'r+' mode
     """
-    # Define a dictionary to map method strings to rasterio resampling methods
     resampling_methods = {
         'nearest': Resampling.nearest,
         'bilinear': Resampling.bilinear,
@@ -1718,16 +1717,8 @@ def resampleRaster(src: rio.DatasetReader,
         'mode': Resampling.mode
     }
 
-    # Get the resampling method, default to nearest if invalid
     resampling_method = resampling_methods.get(method.lower(), Resampling.nearest)
 
-    # Get the transform, dimensions, and projection of the reference dataset
-    ref_transform = ref_src.transform
-    ref_width = ref_src.width
-    ref_height = ref_src.height
-    ref_crs = ref_src.crs
-
-    # Determine the data type of the reference raster
     dtype = ref_src.dtypes[0]  # Assuming all bands have the same dtype
 
     # Determine nodata value
@@ -1739,21 +1730,36 @@ def resampleRaster(src: rio.DatasetReader,
     else:
         nodata_val = new_nodata_val
 
-    # Prepare the profile for the output
-    profile = ref_src.profile
+    if match_extents:
+        dst_transform = ref_src.transform
+        dst_width, dst_height = ref_src.width, ref_src.height
+    else:
+        # Calculate the new dimensions explicitly using ref_src resolution
+        x_res, y_res = ref_src.res
+        src_bounds = src.bounds
+
+        # Compute new width and height based on source bounds and reference resolution
+        dst_width = int((src_bounds.right - src_bounds.left) / x_res)
+        dst_height = int((src_bounds.top - src_bounds.bottom) / abs(y_res))
+
+        # Calculate transform using the ref_src resolution
+        dst_transform = rio.transform.from_origin(src_bounds.left, src_bounds.top, x_res, abs(y_res))
+
+    # Prepare the output profile
+    profile = src.profile.copy()
     profile.update(
         {
-            'count': num_bands,  # Number of bands
-            'height': ref_height,
-            'width': ref_width,
-            'transform': ref_transform,
-            'nodata': nodata_val,  # Update nodata value
+            'count': num_bands,
+            'height': dst_height,
+            'width': dst_width,
+            'transform': dst_transform,
+            'crs': ref_src.crs,
+            'nodata': nodata_val
         }
     )
 
-    # Prepare the output arrays for all bands
     out_arrays = [
-        np.full((ref_height, ref_width), nodata_val, dtype=dtype) for _ in range(num_bands)
+        np.full((dst_height, dst_width), nodata_val, dtype=dtype) for _ in range(num_bands)
     ]
 
     # Loop over each band and resample
@@ -1767,31 +1773,17 @@ def resampleRaster(src: rio.DatasetReader,
         # Replace invalid values in the source data with the new no-data value
         src_data = np.where(~np.isfinite(src_data), nodata_val, src_data).astype(dtype)
 
-        if match_extents:
-            ref_bounds = ref_src.bounds
-            reproject(
-                source=src_data,
-                destination=out_arrays[b - 1],
-                src_transform=src.transform,
-                src_crs=src.crs,
-                dst_transform=ref_transform,
-                dst_crs=ref_crs,
-                dst_width=ref_width,
-                dst_height=ref_height,
-                dst_bounds=ref_bounds,  # Ensure that the destination matches the reference extent
-                resampling=resampling_method
-            )
-        else:
-            # Reproject to match resolution but maintain the source extent
-            reproject(
-                source=src_data,
-                destination=out_arrays[b - 1],
-                src_transform=src.transform,
-                src_crs=src.crs,
-                dst_transform=ref_transform,
-                dst_crs=ref_crs,
-                resampling=resampling_method
-            )
+        reproject(
+            source=src_data,
+            destination=out_arrays[b - 1],
+            src_transform=src.transform,
+            src_crs=src.crs,
+            dst_transform=dst_transform,
+            dst_crs=ref_src.crs,
+            dst_width=dst_width,
+            dst_height=dst_height,
+            resampling=resampling_method
+        )
 
     # Write the resampled data to a new raster file
     with rio.open(out_file, 'w', **profile) as dst:
