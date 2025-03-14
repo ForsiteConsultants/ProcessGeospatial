@@ -233,7 +233,9 @@ def _get_s2_sr_cld_col(aoi, start_date, end_date, cloud_filter):
     return s2_sr_cloudless_col
 
 
-def _add_cloud_bands(img, cloud_prob_thres):  # cloud components
+def _add_cloud_bands(img, cloud_prob_thres):
+    """Adds cloud probability and cloud mask bands to a Sentinel-2 image."""
+
     # Get s2cloudless image, subset the probability band.
     cld_prb = ee.Image(img.get('s2cloudless')).select('probability')
 
@@ -241,7 +243,12 @@ def _add_cloud_bands(img, cloud_prob_thres):  # cloud components
     is_cloud = cld_prb.gt(cloud_prob_thres).rename('clouds')
 
     # Add the cloud probability layer and cloud mask as image bands.
-    return img.addBands(ee.Image([cld_prb, is_cloud]))
+    return img.addBands(cld_prb).addBands(is_cloud)
+
+
+def _add_cloud_bands_to_collection(img_col, cloud_prob_thres):
+    """Maps the _add_cloud_bands function over an ImageCollection."""
+    return img_col.map(lambda img: _add_cloud_bands(img, cloud_prob_thres))
 
 
 def _add_shadow_bands(img, nir_dark_thresh, cloud_proj_dist):  # cloud shadow components
@@ -253,7 +260,7 @@ def _add_shadow_bands(img, nir_dark_thresh, cloud_proj_dist):  # cloud shadow co
     dark_pixels = img.select('B8').lt(nir_dark_thresh * SR_BAND_SCALE).multiply(not_water).rename('dark_pixels')
 
     # Determine the direction to project cloud shadow from clouds (assumes UTM projection).
-    shadow_azimuth = ee.Number(90).subtract(ee.Number(img.get('MEAN_SOLAR_AZIMUTH_ANGLE')));
+    shadow_azimuth = ee.Number(90).subtract(ee.Number(img.get('MEAN_SOLAR_AZIMUTH_ANGLE')))
 
     # Project shadows from clouds for the distance specified by the cloud_proj_dist input.
     cld_proj = (img.select('clouds').directionalDistanceTransform(shadow_azimuth, cloud_proj_dist * 10)
@@ -269,7 +276,9 @@ def _add_shadow_bands(img, nir_dark_thresh, cloud_proj_dist):  # cloud shadow co
     return img.addBands(ee.Image([dark_pixels, cld_proj, shadows]))
 
 
-def _add_cld_shdw_mask(img, buffer, cloud_prob_thresh, nir_dark_thresh, cloud_proj_dist):  # cloud shadow mask
+def _add_cld_shdw_mask(img, buffer, cloud_prob_thresh, nir_dark_thresh, cloud_proj_dist):
+    """Adds cloud and cloud shadow bands to an image."""
+
     # Add cloud component bands
     img_cloud = _add_cloud_bands(img, cloud_prob_thresh)
 
@@ -280,31 +289,32 @@ def _add_cld_shdw_mask(img, buffer, cloud_prob_thresh, nir_dark_thresh, cloud_pr
     is_cld_shdw = img_cloud_shadow.select('clouds').add(img_cloud_shadow.select('shadows')).gt(0)
 
     # Remove small cloud-shadow patches and dilate remaining pixels by BUFFER input.
-    # 20 m scale is for speed, and assumes clouds don't require 10 m precision.
     is_cld_shdw = (is_cld_shdw.focalMin(2).focalMax(buffer * 2 / 20)
                    .reproject(**{'crs': img.select([0]).projection(), 'scale': 20})
                    .rename('cloudmask'))
 
-    # Include only the final cloud/cloud shadow mask along with the original image bands
-    # return img.addBands(is_cld_shdw)
-
-    # Add the final cloud-shadow mask to the image.
     return img_cloud_shadow.addBands(is_cld_shdw)
 
 
-# Define a function to apply the cloud mask to each image in the collection.
+def _add_cld_shdw_mask_to_collection(img_col, buffer, cloud_prob_thresh, nir_dark_thresh, cloud_proj_dist):
+    """Maps the _add_cld_shdw_mask function over an ImageCollection."""
+    return img_col.map(lambda img: _add_cld_shdw_mask(img, buffer, cloud_prob_thresh, nir_dark_thresh, cloud_proj_dist))
+
+
 def _apply_cld_shdw_mask(img):
+    """Applies the cloud and shadow mask to a Sentinel-2 image."""
+
     # Subset the cloudmask band and invert it so clouds/shadow are 0, else 1.
     not_cld_shdw = img.select('cloudmask').Not()
 
-    # Subset reflectance bands and update their masks, return the result.
+    # Subset reflectance bands and update their masks.
     return img.select('B.*').updateMask(not_cld_shdw)
 
 
 def get_sentinel2(ee_project_id: str,
                   aoi_shp_path: str,
-                  start_date: str,
-                  end_date: str,
+                  start_date: list,
+                  end_date: list,
                   out_folder: str,
                   bands: Optional[list] = None,
                   out_epsg: Optional[int] = 4326,
@@ -315,88 +325,93 @@ def get_sentinel2(ee_project_id: str,
                   cloud_proj_dist: int = 2,
                   buffer: int = 0):
     """
-    Function to get Sentinel 2 data from Google Earth Engine.
-
-    :param ee_project_id: The ID of the Google Earth Engine project to use.
-    :param aoi_shp_path: Path to a shapefile to use as an AOI (area of interest) for data download.
-    :param start_date: The start date of imagery to process. Must be a string formatted as 'YYYY-MM-DD'.
-    :param end_date: The end date of imagery to process. Must be a string formatted as 'YYYY-MM-DD'.
-    :param out_folder: The folder to save the output data.
-    :param bands: A list of strings containing the land cover bands to download. If None, all bands are downloaded.
-        Options: ['B2', 'B3', 'B4', 'B8', 'B12']
-    :param out_epsg: The EPSG to apply to the output data.
-        Default: 4326 (Geographic WGS84)
-    :param out_res: The resolution of the output data. Should be in units that match out_epsg.
-        Default: 0.0001 (~11m at the equator)
-    :param cloud_filter:
-    :param cloud_prob_thresh:
-    :param nir_dark_thresh:
-    :param cloud_proj_dist:
-    :param buffer:
-    :return: None
+    Function to get Sentinel-2 data from Google Earth Engine with cloud and shadow masking.
     """
+
     ee.Authenticate()
     ee.Initialize(project=ee_project_id)
 
-    # Set the output EPSG
     dst_crs = f'EPSG:{out_epsg}'
 
-    # Set bands if None
     if bands is None:
         bands = ['B2', 'B3', 'B4', 'B8', 'B12']
 
-    # Get the Earth Engine equivalent of the AOI shapefile bounding box, the shape itself, and the geometry
     bbox, ee_shp, ee_geometry = _get_aoi(shp_path=aoi_shp_path)
     ymin, xmin, ymax, xmax = bbox
+    large_aoi = (abs((ymax - ymin)) > 1) or (abs((xmax - xmin)) > 1)
 
-    # Check if the AOI is large (greater than 1 degree in X or Y direction)
-    large_aoi = False
-    if (abs((ymax - ymin)) > 1) or (abs((xmax - xmin)) > 1):
-        large_aoi = True
-
-    # Build an image collection
-    s2_sr_cld_col_eval = _get_s2_sr_cld_col(ee_geometry, start_date, end_date, cloud_filter)
-
-    # Print the number of images in the collection
-    print('%d images found.' % (len(s2_sr_cld_col_eval.aggregate_array('system:index').getInfo())))
-
-    # Build cloud free data
-    # Apply cloud and cloud-shadow masking, and use median method to calculate reflectances of the missing pixels
-    s2_sr_median = (s2_sr_cld_col_eval.map(_add_cld_shdw_mask(s2_sr_cld_col_eval, buffer, cloud_prob_thresh,
-                                                              nir_dark_thresh, cloud_proj_dist))
-                    .map(_apply_cld_shdw_mask)
-                    .median())
+    # s2_sr_cld_col = _get_s2_sr_cld_col(ee_geometry, start_date, end_date, cloud_filter)
+    #
+    # # Ensure collection is not empty before proceeding
+    # num_images = s2_sr_cld_col.size().getInfo()
+    # if num_images == 0:
+    #     raise ValueError(
+    #         'No Sentinel-2 images found for the given parameters. Check AOI, date range, and cloud filter.')
+    #
+    # print(f'Number of images found: {num_images}')
+    #
+    # # Process the collection
+    # s2_sr_cld_col = _add_cloud_bands_to_collection(s2_sr_cld_col, cloud_prob_thresh)
+    # s2_sr_cld_col = _add_cld_shdw_mask_to_collection(s2_sr_cld_col, buffer, cloud_prob_thresh, nir_dark_thresh,
+    #                                                 cloud_proj_dist)
+    #
+    # # Reduce with median
+    # s2_sr_median = s2_sr_cld_col.map(_apply_cld_shdw_mask).reduce(ee.Reducer.median())
+    #
+    # # Ensure the final image has bands before proceeding
+    # if s2_sr_median.bandNames().size().getInfo() == 0:
+    #     raise ValueError('Processed Sentinel-2 image has no valid bands. Adjust filtering or cloud masking.')
+    #
+    # # Get available band names
+    # available_bands = s2_sr_median.bandNames().getInfo()
+    # print(f'Available bands in final image: {available_bands}')
 
     if large_aoi:
-        # Download images (LARGE AOI)
         tile_dir = os.path.join(out_folder, 'temp_tiles')
-        if not os.path.exists(tile_dir):
-            os.makedirs(tile_dir)
-        tileFeatures = geemap.fishnet(ee_shp, rows=2, cols=2)
+        os.makedirs(tile_dir, exist_ok=True)
+        tile_features = geemap.fishnet(ee_shp, rows=2, cols=2)
+
+        # for band in bands:
+        #     band_median = f'{band}_median'
+        #     if band_median not in available_bands:
+        #         print(f'Skipping {band} as {band_median} is not available.')
+        #         continue
+        #
+        #     print(f'Downloading band: {band_median}')
+        #     geemap.download_ee_image_tiles(image=s2_sr_median.select(band_median),
+        #                                    features=tile_features,
+        #                                    out_dir=tile_dir,
+        #                                    prefix=f'sentinel2_{band}_',
+        #                                    scale=out_res,
+        #                                    crs=dst_crs)
+
+        # Mosaic tiles into a single dataset
+        print('Merging Sentinel 2 tiles into single band datasets')
         for band in bands:
-            geemap.download_ee_image_tiles(s2_sr_median.select(band), tileFeatures,
-                                           out_dir=tile_dir,
-                                           prefix=f'sentinel2_{band}_',
-                                           scale=out_res,
-                                           crs=dst_crs)
+            print(f'\tProcessing band {band}')
+            mosaic_list = glob.glob(os.path.join(tile_dir, f'sentinel2_{band}_*.tif'))
+            mosaic_out = os.path.join(out_folder, f'sentinel2_{band}.tif')
+            mosaic_ras = pr.mosaicRasters(mosaic_list=mosaic_list,
+                                          out_file=mosaic_out,
+                                          extent_mode='trim')
+            mosaic_ras.close()
 
-        # Mosaic tiles into single dataset
-        mosaic_list = glob.glob(os.path.join(tile_dir, '*.tif'))
-        mosaic_out = os.path.join(out_folder, 'landcover.tif')
-        mosaic_ras = pr.mosaicRasters(mosaic_list=mosaic_list,
-                                      out_file=mosaic_out,
-                                      extent_mode='Union')
+        # Cleanup
+        # for path in mosaic_list:
+        #     os.remove(path)
+        # os.rmdir(tile_dir)
+        # mosaic_ras.close()
+        # del mosaic_ras
 
-        # Delete temporary data
-        for path in mosaic_list:
-            os.remove(path)
-        os.remove(tile_dir)
-        mosaic_ras.close()
-        del mosaic_ras
     else:
-        # Download images (SMALL AOI)
         for band in bands:
-            geemap.download_ee_image(s2_sr_median.select(band),
+            band_median = f'{band}_median'
+            if band_median not in available_bands:
+                print(f'Skipping {band} as {band_median} is not available.')
+                continue
+
+            print(f'Downloading band: {band_median}')
+            geemap.download_ee_image(s2_sr_median.select(band_median),
                                      filename=os.path.join(out_folder, f'sentinel2_{band}.tif'),
                                      region=ee_geometry,
                                      scale=out_res,
