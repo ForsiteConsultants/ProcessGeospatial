@@ -1977,7 +1977,7 @@ def tifToASCII(src: rio.DatasetReader,
 
 def toMultiband(path_list: list[str],
                 out_file: str,
-                band_names: list[str] = None) -> rio.DatasetReader:
+                band_names: Optional[list[str]] = None) -> rio.DatasetReader:
     """
     Function to merge multiple single-band rasters into a new multiband raster, optimized for large rasters.
 
