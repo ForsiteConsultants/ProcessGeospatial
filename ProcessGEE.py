@@ -11,6 +11,8 @@ import ee
 import geemap
 import os
 import geopandas as gpd
+import numpy as np
+
 import ProcessRasters as pr
 import gc
 from typing import Optional
@@ -64,24 +66,64 @@ def get_dynworld_landcover(ee_project_id: str,
                            out_res: float = 10,
                            prob_type: Optional[str] = None) -> None:
     """
-    Function to download Google Earth Engine Dynamic World Land Cover data.
+    Downloads and processes Dynamic World Land Cover data from Google Earth Engine (GEE).
 
-    :param ee_project_id: The id of the Google Earth Engine project to use.
-    :param aoi_shp_path: Path to a shapefile to use as an AOI (area of interest) for data download.
-    :param start_date: List of imagery start dates to process. Dates must be a string formatted as YYYY-MM-DD.
-        Each start date must pair with an end date at the same element location within the list.
-    :param end_date: List of imagery end dates to process. Dates must be a string formatted as YYYY-MM-DD.
-        Each end date must pair with a start date at the same element location within the list.
-    :param bands: A list of strings containing the land cover bands to download. If None, all bands are downloaded.
-        Options: ['water', 'trees', 'grass', 'flooded_vegetation', 'crops', 'shrub_and_scrub',
-                 'built', 'bare', 'snow_and_ice']
-    :param out_epsg: The EPSG to apply to the output data.
-        Default: 4326 (Geographic WGS84)
-    :param out_res: The resolution of the output data. Should be in units that match out_epsg. (Default = 10)
-    :param out_folder: The folder to save the output data.
-    :param prob_type: The type of probability statistics to calculate and download.
-        If None, no probability data are downloaded. Options: 'mean', 'median'.
-    :return: None
+    This function:
+        - Retrieves Dynamic World land cover classification data for a given AOI and date range.
+        - Computes the most frequently occurring land cover class (mode) across images.
+        - Optionally downloads probability statistics (mean or median) for selected land cover classes.
+        - Outputs data as GeoTIFFs in the specified coordinate system and resolution.
+        - Handles large AOIs by tiling and mosaicking datasets.
+
+    :param ee_project_id: Google Earth Engine project ID for authentication.
+    :param aoi_shp_path: Path to the shapefile defining the area of interest (AOI).
+    :param start_date: List of start dates (YYYY-MM-DD) for imagery retrieval.
+    :param end_date: List of end dates (YYYY-MM-DD) corresponding to the start dates.
+    :param out_folder: Directory where output land cover rasters will be saved.
+    :param bands: List of land cover probability bands to download. If None, all bands are used.
+        Options: ['water', 'trees', 'grass', 'flooded_vegetation', 'crops',
+                  'shrub_and_scrub', 'built', 'bare', 'snow_and_ice']
+    :param out_epsg: EPSG code for the output projection. Default: 4326 (WGS 84).
+    :param out_res: Spatial resolution of the output data in units matching `out_epsg`. Default: 10 meters.
+    :param prob_type: Type of probability statistic to compute and download.
+        Options: 'mean', 'median'. If None, probability data is not downloaded.
+    :return: None. Processed land cover data is saved as GeoTIFF files.
+
+    ### Processing Steps:
+        1. **Authenticate & Initialize GEE**: Logs into the Google Earth Engine environment.
+        2. **AOI & Image Collection**:
+           - Reads the AOI from the shapefile and determines its bounding box.
+           - Fetches Dynamic World land cover images within the specified date range.
+        3. **Land Cover Classification**:
+           - Computes the most frequent land cover class using a mode reducer.
+           - Downloads the classification map as a GeoTIFF.
+        4. **Handling Large AOIs**:
+           - If the AOI exceeds 1° in any dimension, the function tiles the area into smaller sections.
+           - Tiles are downloaded separately and mosaicked into a single raster.
+        5. **Downloading Probability Data (if specified)**:
+           - Computes the mean or median probability for selected land cover types.
+           - Downloads probability rasters for each band as separate GeoTIFFs.
+
+    ### Output Structure:
+        - **Land cover classification**:
+          - Small AOIs: `landcover.tif`
+          - Large AOIs: Tiled images merged into `landcover.tif`
+        - **Land cover probability data** (if `prob_type` is specified):
+          - Small AOIs: `landcover_prob_{band}.tif`
+          - Large AOIs: Tiled images merged into probability datasets.
+
+    ### Example Usage:
+        get_dynworld_landcover(\n
+            ee_project_id="your_project_id",\n
+            aoi_shp_path="path/to/aoi.shp",\n
+            start_date=["2023-06-01"],\n
+            end_date=["2023-08-31"],\n
+            out_folder="output_directory",\n
+            bands=['trees', 'grass', 'built'],\n
+            out_epsg=32610,  # UTM Zone 10N\n
+            out_res=30,  # 30-meter resolution\n
+            prob_type='mean'\n
+        )\n
     """
     ee.Authenticate()
     ee.Initialize(project=ee_project_id)
@@ -311,6 +353,25 @@ def _apply_cld_shdw_mask(img):
     return img.select('B.*').updateMask(not_cld_shdw)
 
 
+def _sort_by_substring_order(file_paths: list[str], order_list: list[str]) -> list[str]:
+    """
+    Sort file paths based on the order of substrings in another list.
+
+    :param file_paths: List of file paths.
+    :param order_list: List of substrings defining the order.
+    :return: Sorted list of file paths.
+    """
+    order_dict = {substring: index for index, substring in enumerate(order_list)}
+
+    def get_order(file_path: str) -> int:
+        for substring, index in order_dict.items():
+            if substring in file_path:
+                return index
+        return len(order_list)  # Default to last if no match
+
+    return sorted(file_paths, key=get_order)
+
+
 def get_sentinel2(ee_project_id: str,
                   aoi_shp_path: str,
                   start_date: list,
@@ -323,11 +384,69 @@ def get_sentinel2(ee_project_id: str,
                   cloud_prob_thresh: int = 40,
                   nir_dark_thresh: float = 0.15,
                   cloud_proj_dist: int = 2,
-                  buffer: int = 0):
+                  buffer: int = 0) -> None:
     """
-    Function to get Sentinel-2 data from Google Earth Engine with cloud and shadow masking.
-    """
+    Retrieves and processes Sentinel-2 imagery from Google Earth Engine (GEE) with cloud and shadow masking.
 
+    This function:
+        - Retrieves Sentinel-2 surface reflectance data within a specified AOI and date range.
+        - Applies cloud and shadow masking using Sentinel-2 cloud probability and dark pixel thresholding.
+        - Generates a median composite of the filtered images.
+        - Downloads the processed dataset as GeoTIFFs, either as a single raster or tiled outputs if the AOI is large.
+        - Stacks tiled outputs into multiband raster datasets when needed.
+
+    :param ee_project_id: Google Earth Engine project ID for authentication.
+    :param aoi_shp_path: Path to the shapefile defining the area of interest (AOI).
+    :param start_date: Start date for image retrieval (list format: [YYYY, MM, DD]).
+    :param end_date: End date for image retrieval (list format: [YYYY, MM, DD]).
+    :param out_folder: Path to the output directory for storing downloaded images.
+    :param bands: List of Sentinel-2 bands to retrieve. Defaults to ['B2', 'B3', 'B4', 'B8', 'B12'].
+    :param out_epsg: EPSG code for the output projection. Defaults to EPSG:4326.
+    :param out_res: Output spatial resolution in degrees. Defaults to 0.0001 (~10m at the equator).
+    :param cloud_filter: Maximum allowable cloud coverage percentage for image selection. Defaults to 15%.
+    :param cloud_prob_thresh: Cloud probability threshold for masking clouds. Defaults to 40.
+    :param nir_dark_thresh: NIR dark pixel threshold for shadow detection. Defaults to 0.15.
+    :param cloud_proj_dist: Maximum cloud projection distance (km) for shadow masking. Defaults to 2 km.
+    :param buffer: Buffer distance (in pixels) applied to cloud and shadow masks. Defaults to 0 (no buffer).
+    :return: None. Processed Sentinel-2 images are saved as GeoTIFFs in the specified output folder.
+
+    ### Processing Steps:
+        1. **Authenticate & Initialize GEE**: Logs into the Google Earth Engine environment.
+        2. **AOI & Image Collection**:
+            - Reads the AOI from the shapefile.
+            - Filters Sentinel-2 images by date range and cloud coverage.
+        3. **Cloud & Shadow Masking**:
+           - Adds cloud probability and shadow bands.
+           - Applies a cloud-shadow mask to the dataset.
+           - Reduces the dataset to a median composite image.
+        4. **Image Validation**:
+           - Checks if valid bands exist after processing.
+        5. **Downloading & Saving**:
+           - If AOI is large (>1° in width or height), the dataset is split into tiles and merged into multiband rasters.
+           - Otherwise, individual band images are downloaded directly.
+           - Final outputs are saved in the specified projection and resolution.
+
+    ### Output Structure:
+        - **For small AOIs**: Single-band images are saved as `sentinel2_B{band}.tif`.
+        - **For large AOIs**: Tiled images are stacked and saved as `sentinel2_tileX.tif`, where `X` is the tile index.
+
+    ### Example Usage:
+        get_sentinel2(
+            ee_project_id="your_project_id",\n
+            aoi_shp_path="path/to/aoi.shp",\n
+            start_date=[2023, 6, 1],\n
+            end_date=[2023, 8, 31],\n
+            out_folder="output_directory",\n
+            bands=['B2', 'B3', 'B4', 'B8'],\n
+            out_epsg=32610,  # UTM WGS84 Zone 10N\n
+            out_res=10,  # 10-meter resolution\n
+            cloud_filter=20,\n
+            cloud_prob_thresh=50,\n
+            nir_dark_thresh=0.2,\n
+            cloud_proj_dist=3,\n
+            buffer=1\n
+        )
+    """
     ee.Authenticate()
     ee.Initialize(project=ee_project_id)
 
@@ -340,68 +459,71 @@ def get_sentinel2(ee_project_id: str,
     ymin, xmin, ymax, xmax = bbox
     large_aoi = (abs((ymax - ymin)) > 1) or (abs((xmax - xmin)) > 1)
 
-    # s2_sr_cld_col = _get_s2_sr_cld_col(ee_geometry, start_date, end_date, cloud_filter)
-    #
-    # # Ensure collection is not empty before proceeding
-    # num_images = s2_sr_cld_col.size().getInfo()
-    # if num_images == 0:
-    #     raise ValueError(
-    #         'No Sentinel-2 images found for the given parameters. Check AOI, date range, and cloud filter.')
-    #
-    # print(f'Number of images found: {num_images}')
-    #
-    # # Process the collection
-    # s2_sr_cld_col = _add_cloud_bands_to_collection(s2_sr_cld_col, cloud_prob_thresh)
-    # s2_sr_cld_col = _add_cld_shdw_mask_to_collection(s2_sr_cld_col, buffer, cloud_prob_thresh, nir_dark_thresh,
-    #                                                 cloud_proj_dist)
-    #
-    # # Reduce with median
-    # s2_sr_median = s2_sr_cld_col.map(_apply_cld_shdw_mask).reduce(ee.Reducer.median())
-    #
-    # # Ensure the final image has bands before proceeding
-    # if s2_sr_median.bandNames().size().getInfo() == 0:
-    #     raise ValueError('Processed Sentinel-2 image has no valid bands. Adjust filtering or cloud masking.')
-    #
-    # # Get available band names
-    # available_bands = s2_sr_median.bandNames().getInfo()
-    # print(f'Available bands in final image: {available_bands}')
+    s2_sr_cld_col = _get_s2_sr_cld_col(ee_geometry, start_date, end_date, cloud_filter)
+
+    # Ensure collection is not empty before proceeding
+    num_images = s2_sr_cld_col.size().getInfo()
+    if num_images == 0:
+        raise ValueError(
+            'No Sentinel-2 images found for the given parameters. Check AOI, date range, and cloud filter.')
+
+    print(f'Number of images found: {num_images}')
+
+    # Process the collection
+    s2_sr_cld_col = _add_cloud_bands_to_collection(s2_sr_cld_col, cloud_prob_thresh)
+    s2_sr_cld_col = _add_cld_shdw_mask_to_collection(s2_sr_cld_col, buffer, cloud_prob_thresh, nir_dark_thresh,
+                                                    cloud_proj_dist)
+
+    # Reduce with median
+    s2_sr_median = s2_sr_cld_col.map(_apply_cld_shdw_mask).reduce(ee.Reducer.median())
+
+    # Ensure the final image has bands before proceeding
+    if s2_sr_median.bandNames().size().getInfo() == 0:
+        raise ValueError('Processed Sentinel-2 image has no valid bands. Adjust filtering or cloud masking.')
+
+    # Get available band names
+    available_bands = s2_sr_median.bandNames().getInfo()
+    print(f'Available bands in final image: {available_bands}')
 
     if large_aoi:
         tile_dir = os.path.join(out_folder, 'temp_tiles')
         os.makedirs(tile_dir, exist_ok=True)
         tile_features = geemap.fishnet(ee_shp, rows=2, cols=2)
 
-        # for band in bands:
-        #     band_median = f'{band}_median'
-        #     if band_median not in available_bands:
-        #         print(f'Skipping {band} as {band_median} is not available.')
-        #         continue
-        #
-        #     print(f'Downloading band: {band_median}')
-        #     geemap.download_ee_image_tiles(image=s2_sr_median.select(band_median),
-        #                                    features=tile_features,
-        #                                    out_dir=tile_dir,
-        #                                    prefix=f'sentinel2_{band}_',
-        #                                    scale=out_res,
-        #                                    crs=dst_crs)
-
-        # Mosaic tiles into a single dataset
-        print('Merging Sentinel 2 tiles into single band datasets')
         for band in bands:
-            print(f'\tProcessing band {band}')
-            mosaic_list = glob.glob(os.path.join(tile_dir, f'sentinel2_{band}_*.tif'))
-            mosaic_out = os.path.join(out_folder, f'sentinel2_{band}.tif')
-            mosaic_ras = pr.mosaicRasters(mosaic_list=mosaic_list,
-                                          out_file=mosaic_out,
-                                          extent_mode='trim')
-            mosaic_ras.close()
+            band_median = f'{band}_median'
+            if band_median not in available_bands:
+                print(f'Skipping {band} as {band_median} is not available.')
+                continue
 
-        # Cleanup
-        # for path in mosaic_list:
-        #     os.remove(path)
-        # os.rmdir(tile_dir)
-        # mosaic_ras.close()
-        # del mosaic_ras
+            print(f'Downloading band: {band_median}')
+            geemap.download_ee_image_tiles(image=s2_sr_median.select(band_median),
+                                           features=tile_features,
+                                           out_dir=tile_dir,
+                                           prefix=f'sentinel2_{band}_',
+                                           scale=out_res,
+                                           crs=dst_crs)
+
+        # Stacking tiles into a single dataset
+        print('Merging Sentinel 2 tiles into stacked datasets')
+        tile_list = glob.glob(os.path.join(tile_dir, f'sentinel2_{bands[0]}_*.tif'))
+
+        for i in range(1, len(tile_list) + 1):
+            print(f'\tProcessing tile {i}')
+            stack_list = glob.glob(os.path.join(tile_dir, f'*_{i}.tif'))
+            stack_list = _sort_by_substring_order(file_paths=stack_list, order_list=bands)
+            out_file = os.path.join(out_folder, f'sentinel2_tile{i}.tif')
+            band_names = [band.replace('B', 'Band_') for band in bands]
+            stack_ras = pr.toMultiband(path_list=stack_list, out_file=out_file, band_names=band_names)
+            stack_ras.close()
+            del stack_ras
+
+            # Cleanup temp files
+            for path in stack_list:
+                os.remove(path)
+
+        # Cleanup temp directory
+        os.rmdir(tile_dir)
 
     else:
         for band in bands:
@@ -416,3 +538,5 @@ def get_sentinel2(ee_project_id: str,
                                      region=ee_geometry,
                                      scale=out_res,
                                      crs=dst_crs)
+
+    return

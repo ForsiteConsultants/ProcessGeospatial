@@ -1976,24 +1976,36 @@ def tifToASCII(src: rio.DatasetReader,
 
 
 def toMultiband(path_list: list[str],
-                out_file: str) -> rio.DatasetReader:
+                out_file: str,
+                band_names: Optional[list[str]] = None) -> rio.DatasetReader:
     """
-    Function to merge multiple single-band rasters into a new multiband raster.
+    Function to merge multiple single-band rasters into a new multiband raster, optimized for large rasters.
 
     :param path_list: list of paths to single-band raster datasets
     :param out_file: location and name to save output raster
+    :param band_names: optional list of names to apply to each band in the output raster.
+        Verify that the names match the order of file paths in the path_list.
     :return: rasterio dataset reader object in 'r+' mode
     """
-    array_list = [getRaster(path).read(1, masked=True) for path in path_list]
-
-    out_meta = getRaster(path_list[0]).meta.copy()
+    # Open the first raster to get metadata
+    first_raster = getRaster(path_list[0])
+    out_meta = first_raster.meta.copy()
     out_meta.update({'count': len(path_list)})
 
-    shutil.copyfiles(getRaster(path_list[0]).name, out_file)
-
+    # Create the output file
     with rio.open(out_file, 'w', **out_meta) as dest:
-        for band, src in enumerate(array_list, start=1):
-            dest.write(src, band)
+        for band_idx, path in enumerate(path_list, start=1):
+            with rio.open(path) as src:
+                # Process raster in chunks to avoid memory overflow
+                for _, window in src.block_windows(1):
+                    data = src.read(1, window=window)
+                    dest.write(data, band_idx, window=window)
+
+        # Assign band names if provided
+        if band_names:
+            if len(band_names) != len(path_list):
+                raise ValueError('Length of band_names must match the number of input rasters.')
+            dest.descriptions = tuple(band_names)
 
     return rio.open(out_file, 'r+')
 
