@@ -11,6 +11,8 @@ import ee
 import geemap
 import os
 import geopandas as gpd
+import numpy as np
+
 import ProcessRasters as pr
 import gc
 from typing import Optional
@@ -311,6 +313,25 @@ def _apply_cld_shdw_mask(img):
     return img.select('B.*').updateMask(not_cld_shdw)
 
 
+def _sort_by_substring_order(file_paths: list[str], order_list: list[str]) -> list[str]:
+    """
+    Sort file paths based on the order of substrings in another list.
+
+    :param file_paths: List of file paths.
+    :param order_list: List of substrings defining the order.
+    :return: Sorted list of file paths.
+    """
+    order_dict = {substring: index for index, substring in enumerate(order_list)}
+
+    def get_order(file_path: str) -> int:
+        for substring, index in order_dict.items():
+            if substring in file_path:
+                return index
+        return len(order_list)  # Default to last if no match
+
+    return sorted(file_paths, key=get_order)
+
+
 def get_sentinel2(ee_project_id: str,
                   aoi_shp_path: str,
                   start_date: list,
@@ -340,68 +361,71 @@ def get_sentinel2(ee_project_id: str,
     ymin, xmin, ymax, xmax = bbox
     large_aoi = (abs((ymax - ymin)) > 1) or (abs((xmax - xmin)) > 1)
 
-    # s2_sr_cld_col = _get_s2_sr_cld_col(ee_geometry, start_date, end_date, cloud_filter)
-    #
-    # # Ensure collection is not empty before proceeding
-    # num_images = s2_sr_cld_col.size().getInfo()
-    # if num_images == 0:
-    #     raise ValueError(
-    #         'No Sentinel-2 images found for the given parameters. Check AOI, date range, and cloud filter.')
-    #
-    # print(f'Number of images found: {num_images}')
-    #
-    # # Process the collection
-    # s2_sr_cld_col = _add_cloud_bands_to_collection(s2_sr_cld_col, cloud_prob_thresh)
-    # s2_sr_cld_col = _add_cld_shdw_mask_to_collection(s2_sr_cld_col, buffer, cloud_prob_thresh, nir_dark_thresh,
-    #                                                 cloud_proj_dist)
-    #
-    # # Reduce with median
-    # s2_sr_median = s2_sr_cld_col.map(_apply_cld_shdw_mask).reduce(ee.Reducer.median())
-    #
-    # # Ensure the final image has bands before proceeding
-    # if s2_sr_median.bandNames().size().getInfo() == 0:
-    #     raise ValueError('Processed Sentinel-2 image has no valid bands. Adjust filtering or cloud masking.')
-    #
-    # # Get available band names
-    # available_bands = s2_sr_median.bandNames().getInfo()
-    # print(f'Available bands in final image: {available_bands}')
+    s2_sr_cld_col = _get_s2_sr_cld_col(ee_geometry, start_date, end_date, cloud_filter)
+
+    # Ensure collection is not empty before proceeding
+    num_images = s2_sr_cld_col.size().getInfo()
+    if num_images == 0:
+        raise ValueError(
+            'No Sentinel-2 images found for the given parameters. Check AOI, date range, and cloud filter.')
+
+    print(f'Number of images found: {num_images}')
+
+    # Process the collection
+    s2_sr_cld_col = _add_cloud_bands_to_collection(s2_sr_cld_col, cloud_prob_thresh)
+    s2_sr_cld_col = _add_cld_shdw_mask_to_collection(s2_sr_cld_col, buffer, cloud_prob_thresh, nir_dark_thresh,
+                                                    cloud_proj_dist)
+
+    # Reduce with median
+    s2_sr_median = s2_sr_cld_col.map(_apply_cld_shdw_mask).reduce(ee.Reducer.median())
+
+    # Ensure the final image has bands before proceeding
+    if s2_sr_median.bandNames().size().getInfo() == 0:
+        raise ValueError('Processed Sentinel-2 image has no valid bands. Adjust filtering or cloud masking.')
+
+    # Get available band names
+    available_bands = s2_sr_median.bandNames().getInfo()
+    print(f'Available bands in final image: {available_bands}')
 
     if large_aoi:
         tile_dir = os.path.join(out_folder, 'temp_tiles')
         os.makedirs(tile_dir, exist_ok=True)
         tile_features = geemap.fishnet(ee_shp, rows=2, cols=2)
 
-        # for band in bands:
-        #     band_median = f'{band}_median'
-        #     if band_median not in available_bands:
-        #         print(f'Skipping {band} as {band_median} is not available.')
-        #         continue
-        #
-        #     print(f'Downloading band: {band_median}')
-        #     geemap.download_ee_image_tiles(image=s2_sr_median.select(band_median),
-        #                                    features=tile_features,
-        #                                    out_dir=tile_dir,
-        #                                    prefix=f'sentinel2_{band}_',
-        #                                    scale=out_res,
-        #                                    crs=dst_crs)
-
-        # Mosaic tiles into a single dataset
-        print('Merging Sentinel 2 tiles into single band datasets')
         for band in bands:
-            print(f'\tProcessing band {band}')
-            mosaic_list = glob.glob(os.path.join(tile_dir, f'sentinel2_{band}_*.tif'))
-            mosaic_out = os.path.join(out_folder, f'sentinel2_{band}.tif')
-            mosaic_ras = pr.mosaicRasters(mosaic_list=mosaic_list,
-                                          out_file=mosaic_out,
-                                          extent_mode='trim')
-            mosaic_ras.close()
+            band_median = f'{band}_median'
+            if band_median not in available_bands:
+                print(f'Skipping {band} as {band_median} is not available.')
+                continue
 
-        # Cleanup
-        # for path in mosaic_list:
-        #     os.remove(path)
-        # os.rmdir(tile_dir)
-        # mosaic_ras.close()
-        # del mosaic_ras
+            print(f'Downloading band: {band_median}')
+            geemap.download_ee_image_tiles(image=s2_sr_median.select(band_median),
+                                           features=tile_features,
+                                           out_dir=tile_dir,
+                                           prefix=f'sentinel2_{band}_',
+                                           scale=out_res,
+                                           crs=dst_crs)
+
+        # Stacking tiles into a single dataset
+        print('Merging Sentinel 2 tiles into stacked datasets')
+        tile_list = glob.glob(os.path.join(tile_dir, f'sentinel2_{bands[0]}_*.tif'))
+
+        for i in range(1, len(tile_list) + 1):
+            print(f'\tProcessing tile {i}')
+            stack_list = glob.glob(os.path.join(tile_dir, f'*_{i}.tif'))
+            stack_list = _sort_by_substring_order(file_paths=stack_list, order_list=bands)
+            out_file = os.path.join(out_folder, f'sentinel2_tile{i}.tif')
+            band_names = [band.replace('B', 'Band_') for band in bands]
+            stack_ras = pr.toMultiband(path_list=stack_list, out_file=out_file, band_names=band_names)
+            stack_ras.close()
+            del stack_ras
+
+            # Cleanup temp files
+            for path in stack_list:
+                os.remove(path)
+
+        # Cleanup temp directory
+        os.rmdir(tile_dir)
 
     else:
         for band in bands:
