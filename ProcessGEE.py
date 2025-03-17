@@ -344,11 +344,71 @@ def get_sentinel2(ee_project_id: str,
                   cloud_prob_thresh: int = 40,
                   nir_dark_thresh: float = 0.15,
                   cloud_proj_dist: int = 2,
-                  buffer: int = 0):
+                  buffer: int = 0) -> None:
     """
-    Function to get Sentinel-2 data from Google Earth Engine with cloud and shadow masking.
-    """
+    Retrieves and processes Sentinel-2 imagery from Google Earth Engine (GEE) with cloud and shadow masking.
 
+    This function:
+    - Retrieves Sentinel-2 surface reflectance data within a specified AOI and date range.
+    - Applies cloud and shadow masking using Sentinel-2 cloud probability and dark pixel thresholding.
+    - Generates a median composite of the filtered images.
+    - Downloads the processed dataset as GeoTIFFs, either as a single raster or tiled outputs if the AOI is large.
+    - Stacks tiled outputs into multiband raster datasets when needed.
+
+    :param ee_project_id: Google Earth Engine project ID for authentication.
+    :param aoi_shp_path: Path to the shapefile defining the area of interest (AOI).
+    :param start_date: Start date for image retrieval (list format: [YYYY, MM, DD]).
+    :param end_date: End date for image retrieval (list format: [YYYY, MM, DD]).
+    :param out_folder: Path to the output directory for storing downloaded images.
+    :param bands: List of Sentinel-2 bands to retrieve. Defaults to ['B2', 'B3', 'B4', 'B8', 'B12'].
+    :param out_epsg: EPSG code for the output projection. Defaults to EPSG:4326.
+    :param out_res: Output spatial resolution in degrees. Defaults to 0.0001 (~10m at the equator).
+    :param cloud_filter: Maximum allowable cloud coverage percentage for image selection. Defaults to 15%.
+    :param cloud_prob_thresh: Cloud probability threshold for masking clouds. Defaults to 40.
+    :param nir_dark_thresh: NIR dark pixel threshold for shadow detection. Defaults to 0.15.
+    :param cloud_proj_dist: Maximum cloud projection distance (km) for shadow masking. Defaults to 2 km.
+    :param buffer: Buffer distance (in pixels) applied to cloud and shadow masks. Defaults to 0 (no buffer).
+    :return: None. Processed Sentinel-2 images are saved as GeoTIFFs in the specified output folder.
+
+    ### Processing Steps:
+    1. **Authenticate & Initialize GEE**: Logs into the Google Earth Engine environment.
+    2. **AOI & Image Collection**:
+       - Reads the AOI from the shapefile.
+       - Filters Sentinel-2 images by date range and cloud coverage.
+    3. **Cloud & Shadow Masking**:
+       - Adds cloud probability and shadow bands.
+       - Applies a cloud-shadow mask to the dataset.
+       - Reduces the dataset to a median composite image.
+    4. **Image Validation**:
+       - Checks if valid bands exist after processing.
+    5. **Downloading & Saving**:
+       - If AOI is large (>1° in width or height), the dataset is split into tiles and merged into multiband rasters.
+       - Otherwise, individual band images are downloaded directly.
+       - Final outputs are saved in the specified projection and resolution.
+
+    ### Output Structure:
+    - **For small AOIs**: Single-band images are saved as `sentinel2_B{band}.tif`.
+    - **For large AOIs**: Tiled images are stacked and saved as `sentinel2_tileX.tif`, where `X` is the tile index.
+
+    ### Example Usage:
+    ```python
+    get_sentinel2(
+        ee_project_id="your_project_id",
+        aoi_shp_path="path/to/aoi.shp",
+        start_date=[2023, 6, 1],
+        end_date=[2023, 8, 31],
+        out_folder="output_directory",
+        bands=['B2', 'B3', 'B4', 'B8'],
+        out_epsg=32610,  # UTM Zone 10N
+        out_res=10,  # 10-meter resolution
+        cloud_filter=20,
+        cloud_prob_thresh=50,
+        nir_dark_thresh=0.2,
+        cloud_proj_dist=3,
+        buffer=1
+    )
+    ```
+    """
     ee.Authenticate()
     ee.Initialize(project=ee_project_id)
 
@@ -440,3 +500,5 @@ def get_sentinel2(ee_project_id: str,
                                      region=ee_geometry,
                                      scale=out_res,
                                      crs=dst_crs)
+
+    return
