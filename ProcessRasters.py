@@ -1983,7 +1983,8 @@ def toMultiband(path_list: list[str],
 
     :param path_list: list of paths to single-band raster datasets
     :param out_file: location and name to save output raster
-    :param band_names: optional list of names for each band in the output raster
+    :param band_names: optional list of names to apply to each band in the output raster.
+        Verify that the names match the order of file paths in the path_list.
     :return: rasterio dataset reader object in 'r+' mode
     """
     # Open the first raster to get metadata
