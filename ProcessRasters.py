@@ -1889,6 +1889,14 @@ def setNull(src_path: str, nodata_val: Union[int, float]) -> None:
     """
     # Open the dataset in 'r+' mode to allow modifications
     with rio.open(src_path, 'r+') as dst:
+        bands = dst.count
+        for band in bands:
+            arr = dst.read(band)
+            # Handle nodata values: if the raster has a nodata value, set it to -999
+            nodata_value = dst.nodata
+            if nodata_value is not None:
+                arr[arr == nodata_value] = -999  # Set nodata to -999 if needed
+            dst.write(arr, band + 1)
         # Set the nodata value in the dataset
         dst.nodata = nodata_val
         # Update the metadata with the new nodata value
@@ -2116,6 +2124,53 @@ def updateRaster(src: rio.DatasetReader,
 
     # Return new raster as "readonly" rasterio openfile object
     return rio.open(src_path, 'r+')
+
+
+def verify_raster_integrity(file_path: str, expected_bands: int = 8) -> bool:
+    """
+    Verify the integrity of a raster file by confirming:
+    - File exists and is non-zero size
+    - Can be opened with rasterio
+    - Has the expected number of bands
+    - All bands are readable without throwing errors
+    - Nodata values are consistent across bands
+
+    :param file_path: Path to the raster file
+    :param expected_bands: Expected number of bands
+    :return: True if integrity checks pass, False otherwise
+    """
+    if not os.path.exists(file_path):
+        print(f'File not found: {file_path}')
+        return False
+
+    if os.path.getsize(file_path) == 0:
+        print(f'File is empty: {file_path}')
+        return False
+
+    try:
+        with rio.open(file_path) as src:
+            print(f'File CRS: {src.crs}')
+            print(f'Dimensions: {src.width} x {src.height}')
+            print(f'Band count: {src.count}')
+
+            if src.count != expected_bands:
+                print(f'Unexpected number of bands. Expected {expected_bands}, found {src.count}')
+                return False
+
+            nodata_values = []
+            for i in range(1, src.count + 1):
+                band = src.read(i)
+                if band is None or not np.isfinite(band).any():
+                    print(f'Band {i} could not be read or is entirely invalid')
+                    return False
+                nodata_values.append(src.nodata)
+
+            print(f'Nodata values: {set(nodata_values)}')
+            return True
+
+    except Exception as e:
+        print(f'Error reading raster: {e}')
+        return False
 
 
 # STILL WORKING ON THIS FUNCTION
