@@ -13,7 +13,7 @@ import geopandas as gpd
 from geopandas import GeoDataFrame
 import rasterio as rio
 from rasterio.mask import mask
-from rasterio.crs import CRS
+# from rasterio.crs import CRS
 from rasterio.features import shapes, geometry_window, geometry_mask, rasterize
 from rasterio.merge import merge
 from rasterio.transform import xy, from_origin, from_bounds, rowcol
@@ -22,7 +22,7 @@ from rasterio.windows import Window
 # from rasterio.enums import Resampling
 # from rasterio.io import MemoryFile
 from rasterio.transform import Affine
-from pyproj import Transformer
+from pyproj import Transformer, CRS
 from shapely.geometry import Point, box, shape, mapping
 from shapely.affinity import translate
 from scipy.spatial import cKDTree
@@ -727,12 +727,12 @@ def extractRowsColsWithPoly(in_poly: Union[str, fiona.Collection],
         in_poly = fiona.open(in_poly)
 
     # Get the transform and projection of the raster file
-    crs = src.crs
+    ras_epsg = CRS.from_user_input(src.crs).to_authority()
     nodata_value = src.nodata
 
     # Check if the shapefile's CRS matches the raster's CRS
-    shapefile_crs = in_poly.crs
-    if shapefile_crs != crs:
+    shapefile_epsg = CRS.from_user_input(in_poly.crs).to_authority()
+    if ras_epsg != shapefile_epsg:
         raise ValueError('Shapefile and raster CRS do not match')
 
     output_list = []
