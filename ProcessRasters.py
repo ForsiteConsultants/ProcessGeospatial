@@ -707,7 +707,6 @@ def extractValuesAtPoints(in_pts: Union[str, GeoDataFrame],
     else:
         raise TypeError('[ProcessRasters] extractValuesAtPoints() function parameter "out_type" '
                         'must be either "series", "shp" or "csv"')
-
     return
 
 
@@ -739,7 +738,7 @@ def extractRowsColsWithPoly(in_poly: Union[str, fiona.Collection],
 
     for feature in in_poly:
         geom = shape(feature['geometry'])
-        district_id = feature['properties'][id_field]
+        feature_id = feature['properties'][id_field]
 
         # Calculate the window of the raster that intersects with the geometry
         window = geometry_window(src, [mapping(geom)], pad_x=1, pad_y=1)
@@ -779,7 +778,7 @@ def extractRowsColsWithPoly(in_poly: Union[str, fiona.Collection],
         row_col_pairs = list(zip(global_rows, global_cols))
 
         # Append the district ID and the row/column indices to the output list
-        output_list.append([district_id, row_col_pairs])
+        output_list.append([feature_id, row_col_pairs])
 
     return output_list
 
