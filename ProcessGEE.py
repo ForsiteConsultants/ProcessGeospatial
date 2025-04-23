@@ -9,9 +9,7 @@ import os
 import glob
 import ee
 import geemap
-import os
 import geopandas as gpd
-import numpy as np
 
 import ProcessRasters as pr
 import gc
