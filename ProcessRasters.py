@@ -1025,7 +1025,7 @@ def getHillshade(src: rio.DatasetReader,
     return rio.open(out_file, 'r+')
 
 
-def getMean(in_rasters: list[rio.DatasetReader],
+def getMean(in_rasters: Union[list[str], list[rio.DatasetReader]],
             out_file: str,
             full_extent: bool = True) -> rio.DatasetReader:
     """
@@ -1039,11 +1039,16 @@ def getMean(in_rasters: list[rio.DatasetReader],
     """
     # Verify inputs
     if not isinstance(in_rasters, list):
-        raise TypeError('[ProcessRasters] getMean() param "inrasters" must be a list of rasterio objects')
+        raise TypeError('[ProcessRasters] getMean() param "in_rasters" must be a list of strings or '
+                        'rasterio dataset reader objects')
     if not isinstance(out_file, str):
         raise TypeError('[ProcessRasters] getMean() param "out_file" must be a string data type')
     if not isinstance(full_extent, bool):
         raise TypeError('[ProcessRasters] getMean() param "full_extent" must be a boolean data type')
+
+    # Convert file paths to rasterio datasets if necessary
+    if isinstance(in_rasters[0], str):
+        in_rasters = [getRaster(path) for path in in_rasters]
 
     # Use the appropriate bounds option based on full_extent parameter
     bounds = None if full_extent else 'intersection'
@@ -1082,7 +1087,8 @@ def getMinMax(in_rasters: Union[list[str], list[rio.DatasetReader]],
     """
     # Verify inputs
     if not isinstance(in_rasters, list):
-        raise TypeError('[ProcessRasters] getMinMax() param "in_rasters" must be a list of file paths or rasterio dataset reader objects')
+        raise TypeError('[ProcessRasters] getMinMax() param "in_rasters" must be a list of strings or '
+                        'rasterio dataset reader objects')
     if not isinstance(out_file, str):
         raise TypeError('[ProcessRasters] getMinMax() param "out_file" must be a string data type')
     if not isinstance(min_max, str) or min_max not in ['min', 'max']:
@@ -1203,6 +1209,52 @@ def getSlope(src: rio.DatasetReader,
     temp_src = getRaster(out_file)
     calculateStatistics(temp_src)
     temp_src.close()
+
+    return rio.open(out_file, 'r+')
+
+
+def getSum(in_rasters: Union[list[str], list[rio.DatasetReader]],
+           out_file: str,
+           full_extent: bool = True) -> rio.DatasetReader:
+    """
+    Function creates a new raster from the sum of values per cell across all input rasters.
+
+    :param in_rasters: list of rasterio dataset reader objects
+    :param out_file: the path and name of the output file
+    :param full_extent: boolean indicating whether to use (True) the full extent of all rasters,
+        or (False) only the overlapping extent (default = True)
+    :return: rasterio dataset reader object in 'r+' mode
+    """
+    # Verify inputs
+    if not isinstance(in_rasters, list):
+        raise TypeError('[ProcessRasters] getSum() param "in_rasters" must be a list of strings or '
+                        'rasterio dataset reader objects')
+    if not isinstance(out_file, str):
+        raise TypeError('[ProcessRasters] getSum() param "out_file" must be a string data type')
+    if not isinstance(full_extent, bool):
+        raise TypeError('[ProcessRasters] getSum() param "full_extent" must be a boolean data type')
+
+    # Convert file paths to rasterio datasets if necessary
+    if isinstance(in_rasters[0], str):
+        in_rasters = [getRaster(path) for path in in_rasters]
+
+    # Use the appropriate bounds option based on full_extent parameter
+    bounds = None if full_extent else 'intersection'
+
+    # Merge rasters to get the sum values
+    mosaic, out_trans = merge(in_rasters, method='sum', bounds=bounds)
+
+    # Update the profile with new dimensions and transform
+    profile = in_rasters[0].profile
+    profile.update({
+        'height': mosaic.shape[1],
+        'width': mosaic.shape[2],
+        'transform': out_trans
+    })
+
+    # Create new raster file and write data
+    with rio.open(out_file, 'w', **profile) as dst:
+        dst.write(mosaic)
 
     return rio.open(out_file, 'r+')
 
